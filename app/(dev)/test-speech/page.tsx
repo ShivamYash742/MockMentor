@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useSpeechToText } from "../../hooks/useSpeechToText";
-import { useTextToSpeech } from "../../hooks/useTextToSpeech";
+import { useSpeechToText } from "@/hooks/useSpeechToText";
+import { useTextToSpeech } from "@/hooks/useTextToSpeech";
 
 export default function TestSpeechPage() {
   const [testText, setTestText] = useState(

@@ -123,8 +123,8 @@ GEMINI_API_KEY  # Can be removed
 
 - **Main README**: `/README.md`
 - **Prompts Guide**: `/lib/PROMPTS_README.md`
-- **Migration Summary**: `/AI_MIGRATION_SUMMARY.md`
-- **This File**: `/FINAL_SUMMARY.md`
+- **Migration Summary**: `docs/AI_MIGRATION_SUMMARY.md`
+- **This File**: `docs/FINAL_SUMMARY.md`
 
 ## 🎉 You're All Set!
 

@@ -19,7 +19,6 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Input } from './ui/input';
-import { useUnmount } from 'ahooks';
 import { VoiceSessionState } from './logic';
 import { useVoiceInterview, useVoiceInterviewContext } from './logic';
 import LoadingSkeleton from './loading-skeleton';
@@ -300,7 +299,9 @@ const Interview = ({
     }
   }, [sessionState, role, knowledgeBase, speakMessage]);
 
-  useUnmount(() => {
+  // Ref keeps the latest closure so the unmount cleanup sees current sessionState/stop.
+  const onUnmountRef = useRef<() => void>(() => {});
+  onUnmountRef.current = () => {
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       const tracks = stream.getTracks();
@@ -310,7 +311,8 @@ const Interview = ({
     if (sessionState !== VoiceSessionState.INACTIVE) {
       stop();
     }
-  });
+  };
+  useEffect(() => () => onUnmountRef.current(), []);
 
   const getMentorName = (id: string) => {
     const mentor = mentors.find(m => m.id === id || m.id.trim() === id.trim());

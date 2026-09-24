@@ -18,7 +18,7 @@ const CALIBRATION_FRAMES = 90;
 interface FrameRecord {
   ts: number;
   face_detected: boolean;
-  emotions: Record<string, number>;
+  emotions: EmotionScores;
   dominant: string;
   head_pose: { yaw: number; pitch: number; roll: number };
   gaze: { x: number; y: number; looking_at_screen: boolean };
@@ -44,6 +44,7 @@ export function useFaceTracker(
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const initAttemptedRef = useRef(false);
   const frameLogRef = useRef<FrameRecord[]>([]);
+  const frameErrorWarnedRef = useRef(false);
   const startTimeRef = useRef(Date.now());
 
   // Reset startTime when model loads so blink rate calculation is accurate
@@ -180,19 +181,19 @@ export function useFaceTracker(
       const blinksPerMin = blinkStateRef.current.count / (elapsed / 60);
 
       // ── Emotions ──
-      const defaultEmotions: Record<string, number> = {
+      const defaultEmotions: EmotionScores = {
         happy: 0, sad: 0, angry: 0, surprised: 0, fear: 0, disgust: 0, neutral: 1,
       };
       let emotions = defaultEmotions;
       if (faceDetected && result.faceBlendshapes && result.faceBlendshapes.length > 0) {
-        const rawEmotions = classifyEmotions(result.faceBlendshapes[0] as any);
-        const smoothed = emotionEMARef.current.update<EmotionScores>(rawEmotions as EmotionScores);
+        const rawEmotions = classifyEmotions(result.faceBlendshapes[0].categories);
+        const smoothed = emotionEMARef.current.update(rawEmotions);
         emotions = smoothed ?? rawEmotions;
       } else {
         emotionEMARef.current.update(defaultEmotions);
       }
 
-      const dom = dominantEmotion(emotions as any);
+      const dom = dominantEmotion(emotions);
 
       // ── Head pose ──
       let headPose = { yaw: 0, pitch: 0, roll: 0 };
@@ -211,10 +212,9 @@ export function useFaceTracker(
       if (faceDetected && result.faceLandmarks[0].length > 477) {
         const rawGaze = computeGaze(result.faceLandmarks[0]);
         const gs = gazeEMARef.current.update({ x: rawGaze.x, y: rawGaze.y });
-        const gsAny = gs as any;
         gaze = {
-          x: Math.round((gsAny?.x ?? rawGaze.x) * 10000) / 10000,
-          y: Math.round((gsAny?.y ?? rawGaze.y) * 10000) / 10000,
+          x: Math.round(gs.x * 10000) / 10000,
+          y: Math.round(gs.y * 10000) / 10000,
           looking_at_screen: rawGaze.looking_at_screen,
         };
       }
@@ -244,7 +244,7 @@ export function useFaceTracker(
         handData.movement,
         cal.baselineEar,
         cal.baselineMovement,
-        emotions as any,
+        emotions,
         gaze,
         headPose,
       );
@@ -283,7 +283,11 @@ export function useFaceTracker(
 
       setLastFrame(frameRecord as unknown as FaceResult);
     } catch (err) {
-      // Silently skip bad frames
+      // Skip bad frames, but warn once so a systematic failure isn't invisible.
+      if (!frameErrorWarnedRef.current) {
+        frameErrorWarnedRef.current = true;
+        console.warn('Face frame processing failed:', err);
+      }
     }
   }, [videoRef]);
 
@@ -309,7 +313,7 @@ export function useFaceTracker(
   const requestSummary = useCallback(async (): Promise<AggregatedSummary | null> => {
     const frames = frameLogRef.current;
     if (frames.length === 0) return null;
-    return aggregateSession(frames as any);
+    return aggregateSession(frames);
   }, []);
 
   // ── Reset session ──────────────────────────────────────────────────

@@ -95,8 +95,7 @@ Once the prompt system is set up, you can update all prompts by simply editing `
 
 To see all prompts in use:
 ```typescript
-import { getAllPrompts } from '@/lib/promptHelper';
+import prompts from '@/lib/prompts.json';
 
-const prompts = getAllPrompts();
 console.log(prompts);
 ```

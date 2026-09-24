@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import dbConnect from '@/lib/mongodb';
 import GuestUser from '@/lib/models/GuestUser';
-import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,7 +15,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!guestUser) {
-      const newGuestId = uuidv4();
+      const newGuestId = crypto.randomUUID();
       guestUser = new GuestUser({
         guestId: newGuestId,
         interviewCount: 0,

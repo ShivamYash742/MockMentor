@@ -76,10 +76,3 @@ export function getReportGenerationPrompt(params: {
     ...params,
   });
 }
-
-/**
- * Get all prompts (for debugging or admin panel)
- */
-export function getAllPrompts() {
-  return prompts;
-}

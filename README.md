@@ -354,8 +354,8 @@ For a technical interview on this project, focus on these files (in priority ord
 
 | Priority | File | Why It Matters |
 |---|---|---|
-| **1** | `architecture_explanation.md` | **Master this first.** 10-min architectural deep-dive script. Covers all 4 services, voice architecture, ML sidecar, AI fallback, DB choices, scaling. |
-| **2** | `interview_qna.md` | **Memorize key answers.** 7 prepared Q&As: FastAPI vs Flask/Django, MongoDB vs MySQL, STT/TTS implementation, LLM question generation, DB collections, scaling to 10k, biggest tradeoffs. |
+| **1** | `docs/architecture_explanation.md` | **Master this first.** 10-min architectural deep-dive script. Covers all 4 services, voice architecture, ML sidecar, AI fallback, DB choices, scaling. |
+| **2** | `docs/interview_qna.md` | **Memorize key answers.** 7 prepared Q&As: FastAPI vs Flask/Django, MongoDB vs MySQL, STT/TTS implementation, LLM question generation, DB collections, scaling to 10k, biggest tradeoffs. |
 | **3** | `model/tracker/stress.py` | Core ML logic — stress/engagement/confidence/attention formulas. Be ready to explain the math and calibration. |
 | **4** | `hooks/useSpeechToText.ts` | Native browser STT with custom silence detection (3s timeout) + auto-restart logic. Unique cost-saving approach. |
 | **5** | `hooks/useTextToSpeech.ts` | Promise-based TTS with smart voice selection + interruption handling. |
