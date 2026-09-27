@@ -24,7 +24,7 @@ from storage import SessionStorage
 
 ALLOWED_ORIGIN = os.environ.get("ML_ALLOWED_ORIGIN", "*")
 
-app = FastAPI(title="MockMentor ML Sidecar", version="1.0.0", docs_url="/api/docs")
+app = FastAPI(title="MockMentor ML Sidecar", version="2.0.0", docs_url="/api/docs")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[ALLOWED_ORIGIN],
@@ -471,7 +471,7 @@ async def dashboard():
 async def api_root():
     return {
         "service": "MockMentor ML Sidecar",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "endpoints": {
             "dashboard":  "GET  /",
             "health":     "GET  /api/health",
