@@ -1,21 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateWithGroq } from '@/lib/groq';
-import { getInterviewWelcomePrompt, getInterviewConversationPrompt } from '@/lib/promptHelper';
+import { getInterviewWelcomePrompt, getInterviewConversationPrompt, getInterviewKnowledgeBase } from '@/lib/promptHelper';
+import { appConfig } from '@/lib/appConfig';
+import dbConnect from '@/lib/mongodb';
+import Interview from '@/lib/models/Interview';
+import { findOwned, getRequester } from '@/lib/requester';
+import { getMentorById } from '@/lib/mentors';
+import { GRACE_MS, isInterviewLive } from '@/lib/interviewWindow';
+
+const MAX_HISTORY_MESSAGES = 20;
+const MAX_MESSAGE_CHARS = 2000;
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, conversationHistory, knowledgeBase, interviewContext } = await request.json();
+    const requester = await getRequester(request);
+    if (!requester) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-    if (!message) {
+    const { interviewId, message, conversationHistory } = await request.json().catch(() => ({}));
+
+    if (!interviewId || !message) {
       return NextResponse.json(
-        { error: 'Message is required' },
+        { error: 'interviewId and message are required' },
         { status: 400 }
       );
     }
 
+    await dbConnect();
+    const interview = await findOwned(Interview, interviewId, requester);
+    if (!interview) {
+      return NextResponse.json({ error: 'Interview not found' }, { status: 404 });
+    }
+
+    // Caps how much AI use one interview can rack up, without a rate-limit library.
+    if (interview.status !== 'in-progress' || !isInterviewLive(interview.startDateTime, GRACE_MS)) {
+      return NextResponse.json({ error: 'This interview is no longer active' }, { status: 409 });
+    }
+
+    // The prompt is built entirely server-side — the client can no longer supply its own
+    // system prompt or interview context.
+    const mentor = getMentorById(interview.mentorId);
+    const knowledgeBase = getInterviewKnowledgeBase(mentor?.personality, interview.userSummary, interview.jobSummary);
+    const role = interview.jobTitle;
+
     // Handle special cases
     if (message === 'START_INTERVIEW') {
-      const welcomePrompt = getInterviewWelcomePrompt(knowledgeBase, interviewContext?.role || 'a position');
+      const welcomePrompt = getInterviewWelcomePrompt(knowledgeBase, role);
       const result = await generateWithGroq(welcomePrompt);
 
       return NextResponse.json({
@@ -24,16 +55,21 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Build conversation context for regular responses
-    const conversationHistoryText = conversationHistory?.map((msg: { sender: string; text: string }) => `${msg.sender}: ${msg.text}`).join('\n') || 'No previous conversation';
-    
+    // Build conversation context for regular responses — capped so a client can't inflate
+    // the prompt (and the Groq bill) with an unbounded history.
+    const history: Array<{ sender?: string; text?: string }> = Array.isArray(conversationHistory) ? conversationHistory : [];
+    const conversationHistoryText = history
+      .slice(-MAX_HISTORY_MESSAGES)
+      .map((msg) => `${msg?.sender ?? ''}: ${String(msg?.text ?? '').slice(0, MAX_MESSAGE_CHARS)}`)
+      .join('\n') || 'No previous conversation';
+
     const systemPrompt = getInterviewConversationPrompt({
       knowledgeBase,
-      role: interviewContext?.role || 'a position',
-      candidateBackground: interviewContext?.candidateBackground || 'User',
-      duration: interviewContext?.duration || '3 minutes',
+      role,
+      candidateBackground: 'New candidate joining',
+      duration: `${appConfig.interviewDurationSec / 60} minutes`,
       conversationHistory: conversationHistoryText,
-      message,
+      message: String(message).slice(0, MAX_MESSAGE_CHARS),
       isUserPaused: message === '[USER_PAUSED]'
     });
 
@@ -46,28 +82,13 @@ export async function POST(request: NextRequest) {
 
   } catch (error: unknown) {
     console.error('Error generating AI response:', error);
-    
-    // Check if it's a rate limit error
-    if ((error as Error)?.message?.includes('rate_limit') || (error as Error)?.message?.includes('429')) {
-      console.log('Rate limit hit, using fallback response');
-    }
-    
-    // Fallback to a generic response if AI fails
-    const fallbackResponses = [
-      "That's interesting. Can you tell me more about your experience with that?",
-      "I see. How would you handle a challenging situation in this role?",
-      "Thank you for sharing. What do you think is your greatest strength?",
-      "Can you give me a specific example of how you've applied that skill?",
-      "That's valuable experience. How do you see yourself growing in this position?",
-    ];
-    
-    const fallbackResponse = fallbackResponses[Math.floor(Math.random() * fallbackResponses.length)];
-    
-    return NextResponse.json({
-      success: true,
-      response: fallbackResponse,
-      fallback: true,
-      error: (error as Error)?.message?.includes('rate_limit') ? 'rate_limit' : 'ai_error',
-    });
+
+    // Report the failure honestly instead of returning a canned line dressed up as a real
+    // interviewer response — the user should know the AI is down, not be quietly misled.
+    const isRateLimit = (error as Error)?.message?.includes('rate_limit') || (error as Error)?.message?.includes('429');
+    return NextResponse.json(
+      { success: false, error: isRateLimit ? 'rate_limit' : 'ai_error' },
+      { status: 503 }
+    );
   }
 }

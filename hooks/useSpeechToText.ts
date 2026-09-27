@@ -97,13 +97,11 @@ export const useSpeechToText = (options?: {
     recognition.interimResults = interimResults;
 
     recognition.onstart = () => {
-      console.log('Speech recognition started successfully');
       setIsListening(true);
       setError(null);
     };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      console.log('Speech recognition result received');
       let currentInterim = "";
       let currentFinal = "";
 
@@ -141,14 +139,12 @@ export const useSpeechToText = (options?: {
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       if (event.error === 'aborted') {
         // 'aborted' is expected when we call stop() manually - not an error
-        console.log('Speech recognition aborted (expected)');
         setIsListening(false);
         return;
       }
       
       if (event.error === 'no-speech') {
         // 'no-speech' happens automatically during silence. Don't throw a scary UI error.
-        console.log('Speech recognition paused due to silence (no-speech). Will auto-restart.');
         setIsListening(false);
         return;
       }
@@ -169,7 +165,6 @@ export const useSpeechToText = (options?: {
     };
 
     recognition.onend = () => {
-      console.log('Speech recognition ended. Intentionally stopped?', isIntentionallyStopped.current);
       setIsListening(false);
       
       // Only auto-restart if:
@@ -177,7 +172,6 @@ export const useSpeechToText = (options?: {
       // 2. Continuous mode is enabled
       // 3. We're not in the middle of cleanup
       if (!isIntentionallyStopped.current && continuous) {
-        console.log('Auto-restarting speech recognition...');
         // Add a small delay to prevent rapid restart loops
         setTimeout(() => {
           if (!isIntentionallyStopped.current && recognitionRef.current) {
@@ -210,7 +204,6 @@ export const useSpeechToText = (options?: {
       return;
     }
     
-    console.log('🎤 USER CALLED startListening()');
     
     setError(null);
     setTranscript("");
@@ -221,7 +214,6 @@ export const useSpeechToText = (options?: {
     // Check microphone permissions first
     if (navigator.permissions) {
       navigator.permissions.query({ name: 'microphone' as PermissionName }).then((result) => {
-        console.log('Microphone permission:', result.state);
         if (result.state === 'denied') {
           setError("Microphone permission denied. Please allow microphone access in browser settings.");
         }
@@ -233,10 +225,8 @@ export const useSpeechToText = (options?: {
     // Use a small delay to ensure state is clean
     setTimeout(() => {
       try {
-        console.log('Starting speech recognition...');
         if (recognitionRef.current) {
           recognitionRef.current.start();
-          console.log('✅ Speech recognition start() called successfully');
         } else {
           console.error('❌ recognitionRef.current is null!');
           setError('Speech recognition not initialized');
@@ -246,7 +236,6 @@ export const useSpeechToText = (options?: {
           console.error('❌ Error calling start():', e.name, e.message);
           if (e.name === 'InvalidStateError') {
             // Already running, try to stop and restart
-            console.log('Already running, stopping first...');
             try {
               recognitionRef.current?.stop();
               setTimeout(() => {
@@ -270,7 +259,6 @@ export const useSpeechToText = (options?: {
   const stopListening = useCallback(() => {
     if (!isSupported) return;
     
-    console.log('🛑 USER CALLED stopListening()');
     
     if (silenceTimeoutRef.current) {
       clearTimeout(silenceTimeoutRef.current);
@@ -278,7 +266,6 @@ export const useSpeechToText = (options?: {
     isIntentionallyStopped.current = true;
     
     try {
-      console.log('Stopping speech recognition...');
       recognitionRef.current?.stop();
     } catch (e) {
       console.warn("Could not stop recognition:", e);

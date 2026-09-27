@@ -41,17 +41,16 @@ export async function POST(req: NextRequest) {
 
     if (guestId) {
       // Atomic check-and-increment: concurrent requests can't both pass the limit.
+      // getRequester() already confirmed this guestId exists, so a miss here only means the limit was hit.
       const guestUser = await GuestUser.findOneAndUpdate(
         { guestId, interviewCount: { $lt: 1 } },
         { $inc: { interviewCount: 1 }, lastInterviewAt: new Date() }
       );
       if (!guestUser) {
-        return (await GuestUser.exists({ guestId }))
-          ? NextResponse.json(
-              { error: 'Guest users can only take one interview. Please sign up for more.' },
-              { status: 403 }
-            )
-          : NextResponse.json({ error: 'Guest user not found' }, { status: 404 });
+        return NextResponse.json(
+          { error: 'Guest users can only take one interview. Please sign up for more.' },
+          { status: 403 }
+        );
       }
 
       userSummary = resumeSummary;

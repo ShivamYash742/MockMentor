@@ -45,7 +45,6 @@ async function dbConnect() {
     if (e instanceof Error) {
       if (e.message.includes('IP')) {
         console.error('💡 Solution: Add your IP address to MongoDB Atlas IP whitelist');
-        console.error('💡 Your current IP: 103.16.31.13');
       } else if (e.message.includes('authentication')) {
         console.error('💡 Solution: Check your MongoDB username and password');
       } else if (e.message.includes('MONGODB_URI')) {

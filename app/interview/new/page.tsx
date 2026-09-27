@@ -449,7 +449,7 @@ export default function NewInterviewPage() {
                         </p>
                         <input
                           type="file"
-                          accept=".pdf,.doc,.docx,.txt"
+                          accept=".pdf,.txt"
                           onChange={handleFileSelect}
                           className="hidden"
                           id="resume-upload"

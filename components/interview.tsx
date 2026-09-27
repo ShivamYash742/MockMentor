@@ -43,12 +43,10 @@ import { guestHeaders } from '@/lib/utils';
 
 const Interview = ({
   interviewId,
-  knowledgeBase,
   role,
   mentorId,
 }: {
   interviewId: string;
-  knowledgeBase: string;
   role: string;
   mentorId: string;
 }) => {
@@ -245,7 +243,7 @@ const Interview = ({
       setStartError(error instanceof Error ? error.message : 'Could not start the interview');
       return;
     }
-    start(knowledgeBase, role).catch(console.error);
+    start(interviewId).catch(console.error);
   };
   
   const hasWelcomed = useRef(false);
@@ -259,15 +257,13 @@ const Interview = ({
         // Delay to let connection settle
         setTimeout(async () => {
           try {
-            console.log('Generating AI welcome message...');
             const response = await fetch('/api/ai-chat', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...guestHeaders() },
               body: JSON.stringify({
+                interviewId,
                 message: 'START_INTERVIEW',
                 conversationHistory: [],
-                knowledgeBase,
-                interviewContext: { role, candidateBackground: 'New candidate joining', duration: '3 minutes' },
               }),
             });
 
@@ -284,7 +280,7 @@ const Interview = ({
         }, 1500);
       }
     }
-  }, [sessionState, role, knowledgeBase, speakMessage]);
+  }, [sessionState, interviewId, speakMessage]);
 
   // Ref keeps the latest closure so the unmount cleanup sees current sessionState/stop.
   const onUnmountRef = useRef<() => void>(() => {});

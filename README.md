@@ -270,10 +270,10 @@ npm install
 ### 2. Configure Environment
 
 ```bash
-cp .env.example .env.local
+cp .env.example .env
 ```
 
-Edit `.env.local` and fill in all **required** API keys (see the API Keys table above).
+Edit `.env` and fill in all **required** API keys (see the API Keys table above).
 
 ### 3. Run the Web App
 

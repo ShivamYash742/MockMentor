@@ -1,6 +1,6 @@
 # MockMentor — Scan Findings & 5-Step Plan
 
-> **Status: Steps 1–2 done ✅. Waiting for your go-ahead before Step 3.**
+> **Status: Steps 1–3 done ✅. Waiting for your go-ahead before Step 4.**
 > One step at a time: I tick the boxes as I go and check in with you after each step.
 
 ---
@@ -160,20 +160,20 @@ Order: working flow → secure API → correct live experience → honest scores
   - `/api/interview-session` returns 200.
 
 ### Step 3 — Secure the API
-- [ ] A guest id counts only if that `GuestUser` exists. A Clerk user id takes precedence.
-- [ ] `/api/ai-chat`:
+- [x] A guest id counts only if that `GuestUser` exists. A Clerk user id takes precedence.
+- [x] `/api/ai-chat`:
   - takes `interviewId` and checks ownership;
   - requires the interview to be `in-progress` and within its time limit plus grace (this caps usage without a rate-limit library);
   - builds the prompt on the server: `getKnowledgeBase()` moves to `lib/promptHelper.ts`, and the mentor data moves to `lib/mentors.ts`;
   - the client stops sending `knowledgeBase`, and the history it sends is capped at 20 messages of 2,000 characters each.
-- [ ] `upload-resume`: check type (PDF or TXT, including the `%PDF` magic bytes) and size (≤ 5 MB), and parse the file **before** uploading it to Appwrite.
-- [ ] `process-resume`: text only, capped at 20k characters. Share one "summarise + save profile" helper with `upload-resume`.
-- [ ] Restrict the file picker to `accept=".pdf,.txt"`.
-- [ ] Navbar guest login reuses the existing guest id.
-- [ ] Validate client data:
+- [x] `upload-resume`: check type (PDF or TXT, including the `%PDF` magic bytes) and size (≤ 5 MB), and parse the file **before** uploading it to Appwrite.
+- [x] `process-resume`: text only, capped at 20k characters. Share one "summarise + save profile" helper with `upload-resume`.
+- [x] Restrict the file picker to `accept=".pdf,.txt"`.
+- [x] Navbar guest login reuses the existing guest id.
+- [x] Validate client data:
   - a pure `sanitizeFaceAnalytics()`;
   - keep only the known metric fields in session metrics.
-- [ ] Remove the hardcoded IP, the resume-summary logs, and the noisy speech-recognition logs.
+- [x] Remove the hardcoded IP, the resume-summary logs, and the noisy speech-recognition logs.
 - **Verify:**
   - `node --test` passes for `sanitizeFaceAnalytics`;
   - curl `ai-chat` with a bad or missing identity → 4xx; as the owner → 200; after time runs out → 4xx;
@@ -331,3 +331,47 @@ Order: working flow → secure API → correct live experience → honest scores
 - `add_message` doesn't enforce the time limit yet. `ai-chat` is covered in Step 3.
 - `next build` output in `.next/` has placeholder public env vars baked in. Rebuild with real env vars before running `next start`.
 - Nothing committed.
+
+### Step 3 — done (2026-09-27)
+**What changed**
+- **`getRequester()` now verifies guests.** A guest id in the `x-guest-id` header only counts if that `GuestUser` exists in the database (it now calls `dbConnect()` itself, so every route gets this for free). An invented guest id gets 401 everywhere, instead of only being caught later inside `create-interview`. `create-interview`'s own "guest not found" branch was dead code once this landed, so it was removed.
+- **`/api/ai-chat` — the open hole is closed:**
+  - it now requires `interviewId` and checks ownership (`getRequester` + `findOwned`), same as every other route;
+  - it refuses unless the interview is `in-progress` and within its time limit plus the same 2-minute grace the auto-complete check uses (`lib/interviewWindow.ts`, shared by both);
+  - the prompt is built entirely on the server from the stored interview — `getInterviewKnowledgeBase()` (moved into `lib/promptHelper.ts`) and the mentor's personality (`lib/mentors.ts`). The client no longer sends `knowledgeBase` or `interviewContext`; it sends `interviewId`, `message`, and a short history;
+  - the history is capped at the last 20 messages, each cut to 2,000 characters, so a client can't inflate the prompt (or the Groq bill).
+- **Mentor data moved to `lib/mentors.ts`.** `components/mentors.tsx` now re-exports it and keeps only the UI. `generate-report` and `ai-chat` both import from `lib/mentors` — no server route imports a UI file anymore.
+- **`upload-resume` validates before uploading anything:** size (≤5MB), type (PDF or TXT only — `.doc`/`.docx` are now rejected instead of being silently corrupted), and a PDF's `%PDF` magic bytes. The file only reaches Appwrite once every check passes. The file picker's `accept` is now `.pdf,.txt`.
+- **`process-resume`** is text-only now, capped at 20,000 characters. The unused base64-PDF branch and the verbose/PII-leaking `console.log`s (including one that printed the resume summary) are gone.
+- **One shared helper:** `lib/resumeProfile.ts`'s `summarizeAndSaveResume()` replaces the pipeline duplicated between `upload-resume` and `process-resume`.
+- **Navbar guest login reuses the existing guest id** instead of minting a new one on every click, which used to reset the one-interview limit.
+- **Client data is validated before it's stored:**
+  - `lib/faceAnalytics.ts`'s `sanitizeFaceAnalytics()` keeps only known numeric fields (and up to 20 `questionSnapshots`) before a report is saved;
+  - `interview-session`'s `end` action now picks only the known numeric metric fields out of `metricsData` instead of replacing `session.metrics` wholesale — a bad shape can no longer throw a Mongoose cast error and leave the interview stuck `in-progress`;
+  - both reuse `lib/sanitize.ts` (`pickNumbers`, `pickNumberRecord`), covered by `lib/sanitize.test.ts`.
+- **Cleanup:** the hardcoded IP is gone from `lib/mongodb.ts`; `hooks/useSpeechToText.ts` keeps its `console.error`/`console.warn` calls but drops the thirteen routine `console.log`s that fired on every speech event.
+
+**Follow-up fixes (2026-09-27, before committing)** — you asked me to fix everything before committing, so I closed the two gaps I'd flagged and left open:
+- **`/api/ai-chat` no longer fabricates an interviewer response when Groq fails.** It used to return a canned line ("How would you handle a challenging situation...") with `success: true`, so the user had no way to know the AI was down. It now returns `{ success: false, error }` with a 503, same principle as the "never save a made-up report" decision. `useVoiceInterview.handleUserSpeech` now speaks an honest "I'm sorry, I encountered an issue" line on `success: false` (the welcome-message call site already had this fallback, so it needed no change).
+- **`add_message` now enforces the same time window as `ai-chat`** (`isInterviewLive` + `GRACE_MS`), so a client can't keep padding the transcript after the interview should have ended.
+
+**Proof**
+- `lint`, `typecheck`, `test` (6 passing: `pickNumbers`, `pickNumberRecord`, `sanitizeFaceAnalytics`) and `build` all pass, including after the follow-up fixes.
+- Ran `next build` + `next start` against a throwaway `mongo:7` container with placeholder keys, and re-ran the Step 2 guest flow (still 29/29, with one assertion updated: an unknown guest now correctly gets 401, not the old 404) plus the Step 3 checks:
+  - an invented guest id gets 401 on every route (create-interview, interview GET, ai-chat) — the old "guest not found" 404 is gone;
+  - `auth/guest` reuses a passed-in guest id instead of minting a new one;
+  - `ai-chat` before the interview starts → 409; as another guest → 404; once started and Groq fails (placeholder key) → **503 with `success:false`**, not a fake 200 (this re-run replaced the earlier check, which had asserted the old fabricated-response behavior); a stale interview (start time pushed back past 180s+2min grace) → 409; an oversized message/history and injected `knowledgeBase`/`interviewContext` fields still just get a clean 503, no crash;
+  - `add_message` works while the interview is live, and returns 409 once the interview is pushed past its time+grace window;
+  - `upload-resume`: `.docx` → 400 before any upload attempt; a `.pdf`-named file with fake content → 400 (magic-byte check); a 6MB file → 400; no identity → 401; a valid `.txt` passes validation and only then fails at the fake Appwrite/Groq step (500, not 400) — proving validation runs first;
+  - `process-resume`: >20,000 chars → 400; empty content → 400; valid text passes validation (500 from the fake Groq key, not 400);
+  - `end` with a garbage `metricsData` (wrong types, a 100KB junk field, a `__proto__` injection attempt) returns 200, and Mongo shows only the known numeric fields were kept;
+  - `generate-report` with a garbage `faceAnalytics` payload (junk fields, non-numeric emotion values, 2 oversized snapshot arrays) returns 200, and Mongo shows only the sanitized fields were stored.
+
+**Not verified: needs real Clerk keys**
+- Signed-in flow and every browser page, same limitation as Step 2 — Clerk's dev handshake rejects placeholder keys, so the UI couldn't be opened in the browser. The client-side wiring (removing `knowledgeBase` from `Interview`/`useVoiceInterview`, adding `guestHeaders()` to the `ai-chat` and welcome-message calls, the new honest-failure line in `handleUserSpeech`) was checked by reading the code and by the fact that `lint`/`typecheck` catch a mismatched prop or missing import.
+
+**A tooling side-note:** `node --test` runs the `.ts` test file directly (no bundler), and Node's native loader needs explicit extensions on every local import it has to follow — the codebase's usual extensionless imports don't resolve there. I added `allowImportingTsExtensions` to `tsconfig.json` and gave `lib/faceAnalytics.ts` one explicit `.ts` import so its test can load it; nothing else changed, and `next build` still resolves it fine (confirmed above).
+
+**Open, not touched (by design, not oversight)**
+- Any guest id that exists is still accepted as-is — there's no proof of ownership beyond "this id was issued by us." Guests were never meant to have a password; adding one wasn't part of the plan and would be a bigger, separate feature.
+- `README.md` also went into this commit — it's your own edit (the `.env.local` → `.env` rename, matching the `.gitignore`/`.env.example` change from Step 2), read and confirmed harmless before including it.

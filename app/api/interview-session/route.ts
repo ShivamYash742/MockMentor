@@ -3,6 +3,14 @@ import dbConnect from '@/lib/mongodb';
 import InterviewSession from '@/lib/models/InterviewSession';
 import Interview from '@/lib/models/Interview';
 import { findOwned, getRequester } from '@/lib/requester';
+import { pickNumbers, pickNumberRecord } from '@/lib/sanitize';
+import { GRACE_MS, isInterviewLive } from '@/lib/interviewWindow';
+
+const METRIC_NUMBER_KEYS = [
+  'totalDuration', 'userSpeakingTime', 'interviewerSpeakingTime', 'totalPauses',
+  'averagePauseLength', 'longestPause', 'averageResponseTime', 'wordsPerMinute',
+  'interruptionCount', 'fillerWordsCount', 'confidenceScore',
+] as const;
 
 // Create or update interview session
 export async function POST(req: NextRequest) {
@@ -76,6 +84,12 @@ export async function POST(req: NextRequest) {
           );
         }
 
+        // Same window ai-chat enforces — a client can't keep padding the transcript past
+        // the interview's time limit.
+        if (!isInterviewLive(interview.startDateTime, GRACE_MS)) {
+          return NextResponse.json({ error: 'Interview is no longer active' }, { status: 409 });
+        }
+
         session = await InterviewSession.findOne({
           interviewId,
           status: 'active',
@@ -120,7 +134,12 @@ export async function POST(req: NextRequest) {
         session.status = 'completed';
 
         if (metricsData) {
-          session.metrics = metricsData;
+          // Keep only known numeric fields — a bad shape here shouldn't be able to crash the
+          // save() with a cast error and leave the interview stuck 'in-progress'.
+          const metrics: Record<string, unknown> = pickNumbers(metricsData, METRIC_NUMBER_KEYS);
+          const emotionalTone = pickNumberRecord(metricsData.emotionalTone, 5);
+          if (emotionalTone) metrics.emotionalTone = emotionalTone;
+          session.metrics = metrics;
         }
 
         await session.save();

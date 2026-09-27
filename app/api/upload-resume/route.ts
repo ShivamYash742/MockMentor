@@ -2,46 +2,41 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getRequester } from '@/lib/requester';
 import { serverStorage, BUCKET_ID } from '@/lib/appwrite-server';
 import { ID } from 'node-appwrite';
-import { generateWithGroq } from '@/lib/groq';
-import { parsePDF, truncateForAI } from '@/lib/pdf';
-import dbConnect from '@/lib/mongodb';
-import UserProfile from '@/lib/models/User';
-import { getResumeSummaryPrompt } from '@/lib/promptHelper';
+import { parsePDF } from '@/lib/pdf';
+import { summarizeAndSaveResume } from '@/lib/resumeProfile';
+
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
   try {
     const requester = await getRequester(req);
-    const formData = await req.formData();
-
     if (!requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    const file = formData.get('resume') as File;
+
+    const formData = await req.formData();
+    const file = formData.get('resume') as File | null;
 
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
+    if (file.size > MAX_FILE_BYTES) {
+      return NextResponse.json({ error: 'File is too large (max 5MB)' }, { status: 400 });
+    }
 
-    // Convert the Web API File to a Buffer for node-appwrite
     const fileBuffer = Buffer.from(await file.arrayBuffer());
+    const lowerName = file.name.toLowerCase();
+    const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf');
+    const isTxt = file.type === 'text/plain' || lowerName.endsWith('.txt');
 
-    // Upload file to Appwrite using server SDK (node-appwrite v24+)
-    const fileId = ID.unique();
-    const uploadFile = new File([fileBuffer], file.name, { type: file.type });
-    await serverStorage.createFile(BUCKET_ID, fileId, uploadFile);
-
-    // Build the file view URL
-    const endpoint = process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT;
-    const projectId = process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID;
-    const fileUrl = `${endpoint}/storage/buckets/${BUCKET_ID}/files/${fileId}/view?project=${projectId}`;
-
-    // Parse file content for AI processing
-    let fileContent = '';
-
-    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+    // Parse and validate content BEFORE anything is uploaded to Appwrite.
+    let fileContent: string;
+    if (isPdf) {
+      if (fileBuffer.subarray(0, 4).toString('latin1') !== '%PDF') {
+        return NextResponse.json({ error: 'File is not a valid PDF' }, { status: 400 });
+      }
       try {
         fileContent = await parsePDF(fileBuffer);
-        console.log('PDF parsed successfully, extracted text length:', fileContent.length);
       } catch (pdfError) {
         console.error('Error parsing PDF:', pdfError);
         return NextResponse.json(
@@ -49,11 +44,12 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-    } else {
+    } else if (isTxt) {
       fileContent = fileBuffer.toString('utf-8');
+    } else {
+      return NextResponse.json({ error: 'Only PDF and TXT resumes are supported' }, { status: 400 });
     }
 
-    // Check if we extracted any content
     if (!fileContent || fileContent.trim().length === 0) {
       return NextResponse.json(
         { error: 'No text content could be extracted from the file. The PDF may be scanned images or empty.' },
@@ -61,27 +57,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Truncate file content to avoid API size limits
-    const truncatedContent = truncateForAI(fileContent);
+    // Upload only now that the file has passed every check.
+    const fileId = ID.unique();
+    const uploadFile = new File([fileBuffer], file.name, { type: file.type });
+    await serverStorage.createFile(BUCKET_ID, fileId, uploadFile);
 
-    // Generate resume summary using Groq (with automatic model fallback)
-    const prompt = getResumeSummaryPrompt(truncatedContent);
-    const { text: resumeSummary } = await generateWithGroq(prompt);
+    const endpoint = process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT;
+    const projectId = process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID;
+    const fileUrl = `${endpoint}/storage/buckets/${BUCKET_ID}/files/${fileId}/view?project=${projectId}`;
 
-    // Connect to database and save/update user profile if logged in
-    await dbConnect();
-
-    let userProfile = null;
-    if (requester.userId) {
-      userProfile = await UserProfile.findOneAndUpdate(
-        { userId: requester.userId },
-        {
-          resumeUrl: fileUrl,
-          resumeSummary,
-        },
-        { upsert: true, new: true }
-      );
-    }
+    const { resumeSummary, userProfile } = await summarizeAndSaveResume(fileContent, fileUrl, requester);
 
     return NextResponse.json({
       success: true,

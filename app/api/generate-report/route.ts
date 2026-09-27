@@ -5,9 +5,10 @@ import dbConnect from '@/lib/mongodb';
 import InterviewSession, { IInterviewMetrics } from '@/lib/models/InterviewSession';
 import InterviewReport from '@/lib/models/InterviewReport';
 import Interview from '@/lib/models/Interview';
-import { mentors } from '@/components/mentors';
+import { mentors } from '@/lib/mentors';
 import { getReportGenerationPrompt } from '@/lib/promptHelper';
 import { findOwned, getRequester } from '@/lib/requester';
+import { sanitizeFaceAnalytics } from '@/lib/faceAnalytics';
 
 async function generateUnifiedReport(
   messages: Array<{ sender: string; text: string }>,
@@ -233,7 +234,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { interviewId, faceAnalytics } = await req.json().catch(() => ({}));
+    const { interviewId, faceAnalytics: rawFaceAnalytics } = await req.json().catch(() => ({}));
+    const faceAnalytics = sanitizeFaceAnalytics(rawFaceAnalytics);
 
     if (!interviewId) {
       return NextResponse.json(

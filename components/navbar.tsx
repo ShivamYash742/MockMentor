@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { appConfig } from '@/lib/appConfig';
+import { getGuestId } from '@/lib/utils';
 import { ThemeToggle } from './theme-provider';
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
 import { Button } from '@/components/ui/button';
@@ -14,9 +15,11 @@ export default function Navbar() {
   const handleGuestLogin = async () => {
     setGuestLoading(true);
     try {
+      // Reuse the existing guest id if there is one, so re-clicking doesn't reset the interview limit.
       const response = await fetch('/api/auth/guest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guestId: getGuestId() }),
       });
       const data = await response.json();
       if (data.success) {

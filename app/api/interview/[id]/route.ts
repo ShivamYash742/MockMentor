@@ -2,11 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import dbConnect from '@/lib/mongodb';
 import Interview from '@/lib/models/Interview';
 import InterviewSession from '@/lib/models/InterviewSession';
-import { appConfig } from '@/lib/appConfig';
+import { GRACE_MS, interviewEndTime } from '@/lib/interviewWindow';
 import { findOwned, getRequester } from '@/lib/requester';
-
-// Covers the client's own end call arriving late (slow network, closed tab mid-save).
-const STALE_GRACE_MS = 2 * 60 * 1000;
 
 export async function GET(
   req: NextRequest,
@@ -33,9 +30,8 @@ export async function GET(
 
     // An interview left in progress past its time limit (tab closed, crash) is closed here.
     if (interview.status === 'in-progress' && interview.startDateTime) {
-      const limitMs = appConfig.interviewDurationSec * 1000;
-      const endTime = new Date(interview.startDateTime.getTime() + limitMs);
-      if (Date.now() > endTime.getTime() + STALE_GRACE_MS) {
+      const endTime = interviewEndTime(interview.startDateTime);
+      if (Date.now() > endTime.getTime() + GRACE_MS) {
         interview.status = 'completed';
         interview.endDateTime = endTime;
         await interview.save();

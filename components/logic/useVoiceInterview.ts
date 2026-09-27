@@ -4,6 +4,7 @@ import { useCallback, useRef } from "react";
 import { VoiceSessionState, MessageSender, useVoiceInterviewContext } from "./VoiceInterviewContext";
 import { useSpeechToText } from "../../hooks/useSpeechToText";
 import { useTextToSpeech } from "../../hooks/useTextToSpeech";
+import { guestHeaders } from "@/lib/utils";
 
 export const useVoiceInterview = () => {
   const {
@@ -16,7 +17,9 @@ export const useVoiceInterview = () => {
     messages
   } = useVoiceInterviewContext();
 
-  const aiStateRef = useRef<{ kb: string, role: string, isProcessing: boolean, isPaused: boolean, isActive: boolean }>({ kb: "", role: "", isProcessing: false, isPaused: false, isActive: false });
+  // The server (ai-chat) builds the prompt itself from interviewId — the client only
+  // identifies which interview this is.
+  const aiStateRef = useRef<{ interviewId: string, isProcessing: boolean, isPaused: boolean, isActive: boolean }>({ interviewId: "", isProcessing: false, isPaused: false, isActive: false });
 
   const handleUserSpeech = async (text: string) => {
     if (aiStateRef.current.isProcessing) return;
@@ -34,23 +37,23 @@ export const useVoiceInterview = () => {
           sender: m.sender === MessageSender.CLIENT ? 'User' : 'Interviewer',
           text: m.content
        }));
-       
-       const context = aiStateRef.current;
-       
+
        const response = await fetch('/api/ai-chat', {
          method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
+         headers: { 'Content-Type': 'application/json', ...guestHeaders() },
          body: JSON.stringify({
+            interviewId: aiStateRef.current.interviewId,
             message: text,
             conversationHistory: history,
-            knowledgeBase: context.kb,
-            interviewContext: { role: context.role, candidateBackground: "User", duration: "3 minutes" }
          })
        });
        
        const data = await response.json();
        if (data.success) {
           await speakMessage(data.response);
+       } else {
+          console.error("AI chat error", data.error);
+          await speakMessage("I'm sorry, I encountered an issue. Could you repeat that?");
        }
     } catch (err) {
        console.error("AI chat error", err);
@@ -92,13 +95,12 @@ export const useVoiceInterview = () => {
   const { speak, stop: stopTts, isSupported: isTtsSupported } = useTextToSpeech();
 
   const start = useCallback(
-    async (knowledgeBase: string, role: string) => {
+    async (interviewId: string) => {
       if (!isSttSupported || !isTtsSupported) {
         console.error("Speech APIs not supported in this browser");
         // We'll let the user continue but voice won't work well
       }
-      aiStateRef.current.kb = knowledgeBase;
-      aiStateRef.current.role = role;
+      aiStateRef.current.interviewId = interviewId;
       aiStateRef.current.isActive = true;
       
       setSessionState(VoiceSessionState.CONNECTING);
