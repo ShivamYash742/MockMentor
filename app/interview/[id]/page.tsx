@@ -11,6 +11,7 @@ import LoadingSkeleton from '@/components/loading-skeleton';
 import InterviewComplete from '@/components/interview-complete';
 import Link from 'next/link';
 import { getMentorById } from '@/components/mentors';
+import { guestHeaders } from '@/lib/utils';
 
 interface Interview {
   _id: string;
@@ -21,6 +22,8 @@ interface Interview {
   jobSummary: string;
   status: 'scheduled' | 'in-progress' | 'completed';
   startDateTime?: string;
+  sessionId?: string;
+  reportId?: string;
   createdAt: string;
   updatedAt: string;
   mentorId: string;
@@ -34,57 +37,15 @@ export default function InterviewPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Start interview
-  const startInterview = useCallback(
-    async (interviewData: Interview) => {
-      if (interviewData.status !== 'scheduled') return interviewData;
-
-      try {
-        const guestId = localStorage.getItem('guestId');
-        const body = { status: 'in-progress', ...(guestId && { guestId }) };
-        const response = await fetch(`/api/interview/${interviewId}`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-          return data.interview;
-        } else {
-          console.error('Failed to start interview:', data.error);
-          return interviewData;
-        }
-      } catch (error) {
-        console.error('Error starting interview:', error);
-        return interviewData;
-      }
-    },
-    [interviewId]
-  );
-
   // Fetch interview data
   const fetchInterview = useCallback(async () => {
     try {
       setLoading(true);
-      const guestId = localStorage.getItem('guestId');
-      const query = guestId ? `?guestId=${guestId}` : '';
-      const response = await fetch(`/api/interview/${interviewId}${query}`);
+      const response = await fetch(`/api/interview/${interviewId}`, { headers: guestHeaders() });
       const data = await response.json();
 
       if (data.success) {
-        // First set the interview data, then conditionally start it
-        let interviewData = data.interview;
-
-        // Auto-start if scheduled
-        if (interviewData.status === 'scheduled') {
-          interviewData = await startInterview(interviewData);
-        }
-
-        setInterview(interviewData);
+        setInterview(data.interview);
         setError(null);
       } else {
         setError(data.error || 'Failed to fetch interview');
@@ -95,65 +56,7 @@ export default function InterviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [interviewId, startInterview]);
-
-  // Auto-complete interview after 5 minutes
-  const completeInterview = useCallback(async () => {
-    if (!interview || interview.status !== 'in-progress') return;
-
-    try {
-      const guestId = localStorage.getItem('guestId');
-      const body = { status: 'completed', ...(guestId && { guestId }) };
-      const response = await fetch(`/api/interview/${interviewId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        setInterview(data.interview);
-      }
-    } catch (error) {
-      console.error('Error completing interview:', error);
-    }
-  }, [interview, interviewId]);
-
-  // Calculate time remaining for in-progress interviews
-  useEffect(() => {
-    if (
-      !interview ||
-      interview.status !== 'in-progress' ||
-      !interview.startDateTime
-    ) {
-      return;
-    }
-
-    const startTime = new Date(interview.startDateTime).getTime();
-    const threeMinutes = 3 * 60 * 1000; // 3 minutes in milliseconds
-
-    const updateTimer = () => {
-      const now = Date.now();
-      const elapsed = now - startTime;
-      const remaining = Math.max(0, threeMinutes - elapsed);
-
-      // Auto-complete when time is up
-      if (remaining === 0) {
-        completeInterview();
-      }
-    };
-
-    // Update immediately
-    updateTimer();
-
-    // Update every second
-    const interval = setInterval(updateTimer, 1000);
-
-    return () => clearInterval(interval);
-  }, [interview, completeInterview]);
+  }, [interviewId]);
 
   // Fetch interview on component mount
   useEffect(() => {
@@ -196,7 +99,13 @@ export default function InterviewPage() {
   }
 
   if (interview.status === 'completed') {
-    return <InterviewComplete />;
+    return (
+      <InterviewComplete
+        interviewId={interview._id}
+        sessionId={interview.sessionId}
+        hasReport={!!interview.reportId}
+      />
+    );
   }
 
   return (

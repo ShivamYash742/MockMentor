@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 
 import Link from 'next/link';
+import { guestHeaders } from '@/lib/utils';
 
 interface InterviewReportProps {
   interviewId: string;
@@ -105,16 +106,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
   const fetchReport = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/generate-report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ interviewId })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
+      const response = await fetch(`/api/report/${interviewId}`, { headers: guestHeaders() });
       const data = await response.json();
 
       if (data.success) {

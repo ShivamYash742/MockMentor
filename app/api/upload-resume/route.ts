@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getRequester } from '@/lib/requester';
 import { serverStorage, BUCKET_ID } from '@/lib/appwrite-server';
 import { ID } from 'node-appwrite';
 import { generateWithGroq } from '@/lib/groq';
@@ -10,11 +10,10 @@ import { getResumeSummaryPrompt } from '@/lib/promptHelper';
 
 export async function POST(req: NextRequest) {
   try {
-    const { userId } = await auth();
+    const requester = await getRequester(req);
     const formData = await req.formData();
-    const guestId = formData.get('guestId') as string;
 
-    if (!userId && !guestId) {
+    if (!requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     const file = formData.get('resume') as File;
@@ -73,9 +72,9 @@ export async function POST(req: NextRequest) {
     await dbConnect();
 
     let userProfile = null;
-    if (userId) {
+    if (requester.userId) {
       userProfile = await UserProfile.findOneAndUpdate(
-        { userId },
+        { userId: requester.userId },
         {
           resumeUrl: fileUrl,
           resumeSummary,

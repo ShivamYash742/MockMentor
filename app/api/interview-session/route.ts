@@ -1,30 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
 import dbConnect from '@/lib/mongodb';
 import InterviewSession from '@/lib/models/InterviewSession';
 import Interview from '@/lib/models/Interview';
-
-async function getAuthIdentifiers(req: NextRequest) {
-  const { userId } = await auth();
-  const body = await req.json().catch(() => ({}));
-  const { guestId } = body;
-
-  return { userId, guestId };
-}
+import { findOwned, getRequester } from '@/lib/requester';
 
 // Create or update interview session
 export async function POST(req: NextRequest) {
   try {
-    const { userId, guestId } = await getAuthIdentifiers(req);
-
-    if (!userId && !guestId) {
+    const requester = await getRequester(req);
+    if (!requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const body = await req.json().catch(() => ({}));
-    const { interviewId, action, messageData, metricsData } = body;
+    const { action, messageData, metricsData } = body;
 
-    if (!interviewId || !action) {
+    if (!body.interviewId || !action) {
       return NextResponse.json(
         { error: 'Interview ID and action are required' },
         { status: 400 }
@@ -33,25 +24,48 @@ export async function POST(req: NextRequest) {
 
     await dbConnect();
 
+    const interview = await findOwned(Interview, body.interviewId, requester);
+    if (!interview) {
+      return NextResponse.json({ error: 'Interview not found' }, { status: 404 });
+    }
+    const interviewId = String(interview._id);
+
     let session;
 
     switch (action) {
       case 'start':
-        session = new InterviewSession({
-          interviewId,
-          userId,
-          guestId,
-          messages: [],
-          startTime: new Date(),
-          status: 'active',
-        });
-        await session.save();
+        if (interview.status === 'completed') {
+          return NextResponse.json(
+            { error: 'Interview already completed' },
+            { status: 409 }
+          );
+        }
 
-        await Interview.findByIdAndUpdate(interviewId, {
-          status: 'in-progress',
-          startDateTime: new Date(),
-          sessionId: session._id,
-        });
+        // Idempotent: one session per interview (unique index), so a refresh or a
+        // double click gets the existing session and its original startTime.
+        session = await InterviewSession.findOneAndUpdate(
+          { interviewId },
+          {
+            $setOnInsert: {
+              userId: interview.userId,
+              guestId: interview.guestId,
+              startTime: new Date(),
+              status: 'active',
+            },
+          },
+          { upsert: true, new: true }
+        );
+
+        // Rewriting the same values on a repeat start is a no-op. Matching in-progress too links
+        // interviews the old page auto-started without a session.
+        await Interview.updateOne(
+          { _id: interview._id, status: { $ne: 'completed' } },
+          {
+            status: 'in-progress',
+            startDateTime: session.startTime,
+            sessionId: String(session._id),
+          }
+        );
         break;
 
       case 'add_message':
@@ -89,72 +103,6 @@ export async function POST(req: NextRequest) {
         await session.save();
         break;
 
-      case 'add_messages_batch':
-        const { messagesData } = body;
-        if (!messagesData || !Array.isArray(messagesData) || messagesData.length === 0) {
-          return NextResponse.json(
-            { error: 'messagesData array is required for batch insert' },
-            { status: 400 }
-          );
-        }
-
-        const batchSession = await InterviewSession.findOne({
-          interviewId,
-          status: 'active',
-        });
-
-        if (!batchSession) {
-          return NextResponse.json(
-            { error: 'Active session not found' },
-            { status: 404 }
-          );
-        }
-
-        await InterviewSession.findByIdAndUpdate(batchSession._id, {
-          $push: {
-            messages: {
-              $each: messagesData.map((msg: Record<string, unknown>) => ({
-                id: (msg.id as string) || Date.now().toString(),
-                sender: msg.sender,
-                text: msg.text,
-                timestamp: new Date((msg.timestamp as string) || Date.now()),
-                duration: msg.duration,
-                pauseBefore: msg.pauseBefore,
-                confidence: msg.confidence,
-                emotion: msg.emotion,
-                volume: msg.volume,
-              })),
-            },
-          },
-        });
-
-        session = batchSession;
-        break;
-
-      case 'update_metrics':
-        if (!metricsData) {
-          return NextResponse.json(
-            { error: 'Metrics data is required' },
-            { status: 400 }
-          );
-        }
-
-        session = await InterviewSession.findOne({
-          interviewId,
-          status: 'active',
-        });
-
-        if (!session) {
-          return NextResponse.json(
-            { error: 'Active session not found' },
-            { status: 404 }
-          );
-        }
-
-        session.metrics = { ...session.metrics, ...metricsData };
-        await session.save();
-        break;
-
       case 'end':
         session = await InterviewSession.findOne({
           interviewId,
@@ -172,24 +120,14 @@ export async function POST(req: NextRequest) {
         session.status = 'completed';
 
         if (metricsData) {
-          session.metrics = { ...session.metrics, ...metricsData };
+          session.metrics = metricsData;
         }
 
         await session.save();
 
-        await Interview.findByIdAndUpdate(interviewId, {
-          status: 'completed',
-          endDateTime: new Date(),
-        });
-
-        if (guestId) {
-          await import('@/lib/models/GuestUser').then(({ default: GuestUser }) => {
-            GuestUser.findOneAndUpdate(
-              { guestId },
-              { $inc: { interviewCount: 1 }, lastInterviewAt: new Date() }
-            );
-          });
-        }
+        interview.status = 'completed';
+        interview.endDateTime = session.endTime;
+        await interview.save();
         break;
 
       default:
@@ -201,70 +139,17 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      session: session ? {
+      session: {
         id: session._id,
         status: session.status,
+        startTime: session.startTime,
         messageCount: session.messages?.length || 0,
-      } : null,
+      },
     });
   } catch (error) {
     console.error('Error managing interview session:', error);
     return NextResponse.json(
       { error: 'Failed to manage interview session' },
-      { status: 500 }
-    );
-  }
-}
-
-// Get interview session data
-export async function GET(req: NextRequest) {
-  try {
-    const { userId } = await auth();
-    const { searchParams } = new URL(req.url);
-    const guestId = searchParams.get('guestId');
-    const interviewId = searchParams.get('interviewId');
-    const sessionId = searchParams.get('sessionId');
-
-    if (!userId && !guestId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    if (!interviewId && !sessionId) {
-      return NextResponse.json(
-        { error: 'Interview ID or Session ID is required' },
-        { status: 400 }
-      );
-    }
-
-    await dbConnect();
-
-    let session;
-    if (sessionId) {
-      session = await InterviewSession.findById(sessionId);
-    } else {
-      session = await InterviewSession.findOne({ interviewId });
-    }
-
-    if (!session) {
-      return NextResponse.json(
-        { error: 'Session not found' },
-        { status: 404 }
-      );
-    }
-
-    const isOwner = (userId && session.userId === userId) || (guestId && session.guestId === guestId);
-    if (!isOwner) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
-
-    return NextResponse.json({
-      success: true,
-      session,
-    });
-  } catch (error) {
-    console.error('Error fetching interview session:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch interview session' },
       { status: 500 }
     );
   }

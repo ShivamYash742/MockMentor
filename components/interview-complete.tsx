@@ -3,19 +3,21 @@ import { CheckCircle, ArrowRight, Loader2, Sparkles, AlertTriangle, RotateCcw } 
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
+import { guestHeaders } from '@/lib/utils';
 
 interface InterviewCompleteProps {
   interviewId?: string;
   sessionId?: string | null;
   faceAnalytics?: object | null;
+  hasReport?: boolean;
 }
 
 const MAX_RETRIES = 3;
 
-const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sessionId, faceAnalytics }) => {
+const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sessionId, faceAnalytics, hasReport = false }) => {
   const [showAnimation, setShowAnimation] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
-  const [reportGenerated, setReportGenerated] = useState(false);
+  const [reportGenerated, setReportGenerated] = useState(hasReport);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
@@ -30,11 +32,10 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
     setGeneratingReport(true);
     setError(null);
     try {
-      const guestId = localStorage.getItem('guestId');
-      const body = { interviewId, sessionId, ...(faceAnalytics ? { faceAnalytics } : {}), ...(guestId && { guestId }) };
+      const body = { interviewId, ...(faceAnalytics ? { faceAnalytics } : {}) };
       const response = await fetch('/api/generate-report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guestHeaders() },
         body: JSON.stringify(body),
       });
 

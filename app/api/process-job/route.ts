@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getRequester } from '@/lib/requester';
 import { generateWithGroq } from '@/lib/groq';
 import { getJobSummaryPrompt } from '@/lib/promptHelper';
 
 export async function POST(req: NextRequest) {
   try {
-    const { userId } = await auth();
-    const { jobTitle, jobDescription, guestId } = await req.json();
+    const { jobTitle, jobDescription } = await req.json();
 
-    if (!userId && !guestId) {
+    if (!(await getRequester(req))) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

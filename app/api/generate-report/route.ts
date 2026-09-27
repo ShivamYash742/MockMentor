@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
 import { generateText } from 'ai';
 import { groq } from '@/lib/groq';
 import dbConnect from '@/lib/mongodb';
@@ -8,6 +7,7 @@ import InterviewReport from '@/lib/models/InterviewReport';
 import Interview from '@/lib/models/Interview';
 import { mentors } from '@/components/mentors';
 import { getReportGenerationPrompt } from '@/lib/promptHelper';
+import { findOwned, getRequester } from '@/lib/requester';
 
 async function generateUnifiedReport(
   messages: Array<{ sender: string; text: string }>,
@@ -228,13 +228,12 @@ async function generateUnifiedReport(
 
 export async function POST(req: NextRequest) {
   try {
-    const { userId } = await auth();
-    const body = await req.json();
-    const { interviewId, sessionId: providedSessionId, faceAnalytics, guestId } = body;
-
-    if (!userId && !guestId) {
+    const requester = await getRequester(req);
+    if (!requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const { interviewId, faceAnalytics } = await req.json().catch(() => ({}));
 
     if (!interviewId) {
       return NextResponse.json(
@@ -245,8 +244,8 @@ export async function POST(req: NextRequest) {
 
     await dbConnect();
 
-    const interview = await Interview.findById(interviewId);
-    
+    const interview = await findOwned(Interview, interviewId, requester);
+
     if (!interview) {
       return NextResponse.json(
         { error: 'Interview not found' },
@@ -254,42 +253,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const isInterviewOwner = (userId && interview.userId === userId) || (guestId && interview.guestId === guestId);
-    if (!isInterviewOwner) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
-
-    // Use provided sessionId or get it from interview
-    const sessionId = providedSessionId || interview.sessionId;
-    
-    if (!sessionId) {
-      return NextResponse.json(
-        { error: 'Session ID not found for this interview' },
-        { status: 400 }
-      );
-    }
-
-    const session = await InterviewSession.findById(sessionId);
-
-    if (!session) {
-      return NextResponse.json(
-        { error: 'Session not found' },
-        { status: 404 }
-      );
-    }
-
-    const isSessionOwner = (userId && session.userId === userId) || (guestId && session.guestId === guestId);
-    if (!isSessionOwner) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
-
-    const existingReport = await InterviewReport.findOne({ interviewId });
+    const existingReport = await InterviewReport.findOne({ interviewId: String(interview._id) });
     if (existingReport) {
       return NextResponse.json({
         success: true,
         report: existingReport,
         message: 'Report already exists'
       });
+    }
+
+    // The session is taken from the interview, never from the client.
+    const session = interview.sessionId
+      ? await InterviewSession.findById(interview.sessionId)
+      : null;
+
+    if (!session) {
+      return NextResponse.json(
+        { error: 'No session found for this interview' },
+        { status: 404 }
+      );
     }
 
     const mentor = mentors.find(m => m.id === interview.mentorId);
@@ -315,9 +297,10 @@ export async function POST(req: NextRequest) {
 
     // 3. Save to database
     const report = new InterviewReport({
-      interviewId,
-      sessionId,
-      userId,
+      interviewId: String(interview._id),
+      sessionId: String(session._id),
+      userId: interview.userId,
+      guestId: interview.guestId,
       jobTitle: interview.jobTitle,
       mentorName,
       performanceAnalysis: aiAnalysis.performanceAnalysis,
@@ -331,11 +314,11 @@ export async function POST(req: NextRequest) {
     await report.save();
 
     await Promise.all([
-      Interview.findByIdAndUpdate(interviewId, {
+      Interview.findByIdAndUpdate(interview._id, {
         reportId: report._id,
         status: 'completed'
       }),
-      InterviewSession.findByIdAndUpdate(sessionId, {
+      InterviewSession.findByIdAndUpdate(session._id, {
         status: 'completed'
       })
     ]);

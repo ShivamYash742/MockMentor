@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
 import dbConnect from '@/lib/mongodb';
 import Interview from '@/lib/models/Interview';
 import UserProfile from '@/lib/models/User';
 import GuestUser from '@/lib/models/GuestUser';
+import { getRequester } from '@/lib/requester';
 
 export async function POST(req: NextRequest) {
   try {
-    const { userId } = await auth();
+    const requester = await getRequester(req);
     const body = await req.json();
-    const { jobTitle, jobDescription, jobSummary, mentorId, guestId, resumeSummary } = body;
+    const { jobTitle, jobDescription, jobSummary, mentorId, resumeSummary } = body;
 
-    if (!userId && !guestId) {
+    if (!requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -23,6 +23,8 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    const { userId, guestId } = requester;
 
     if (guestId && !resumeSummary) {
       return NextResponse.json(
@@ -38,19 +40,18 @@ export async function POST(req: NextRequest) {
     let userSummary: string;
 
     if (guestId) {
-      const guestUser = await GuestUser.findOne({ guestId });
+      // Atomic check-and-increment: concurrent requests can't both pass the limit.
+      const guestUser = await GuestUser.findOneAndUpdate(
+        { guestId, interviewCount: { $lt: 1 } },
+        { $inc: { interviewCount: 1 }, lastInterviewAt: new Date() }
+      );
       if (!guestUser) {
-        return NextResponse.json(
-          { error: 'Guest user not found' },
-          { status: 404 }
-        );
-      }
-
-      if (guestUser.interviewCount >= 1) {
-        return NextResponse.json(
-          { error: 'Guest users can only take one interview. Please sign up for more.' },
-          { status: 403 }
-        );
+        return (await GuestUser.exists({ guestId }))
+          ? NextResponse.json(
+              { error: 'Guest users can only take one interview. Please sign up for more.' },
+              { status: 403 }
+            )
+          : NextResponse.json({ error: 'Guest user not found' }, { status: 404 });
       }
 
       userSummary = resumeSummary;

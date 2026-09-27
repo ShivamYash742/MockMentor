@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
 import dbConnect from '@/lib/mongodb';
-import Interview, { IInterview } from '@/lib/models/Interview';
+import Interview from '@/lib/models/Interview';
+import InterviewSession from '@/lib/models/InterviewSession';
+import { appConfig } from '@/lib/appConfig';
+import { findOwned, getRequester } from '@/lib/requester';
+
+// Covers the client's own end call arriving late (slow network, closed tab mid-save).
+const STALE_GRACE_MS = 2 * 60 * 1000;
 
 export async function GET(
   req: NextRequest,
@@ -9,16 +14,15 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const { userId } = await auth();
-    const guestId = req.nextUrl.searchParams.get('guestId');
+    const requester = await getRequester(req);
 
-    if (!userId && !guestId) {
+    if (!requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     await dbConnect();
 
-    const interview = (await Interview.findById(id)) as IInterview | null;
+    const interview = await findOwned(Interview, id, requester);
 
     if (!interview) {
       return NextResponse.json(
@@ -27,19 +31,21 @@ export async function GET(
       );
     }
 
-    // Check if user owns this interview
-    const isOwner = (userId && interview.userId === userId) || (guestId && interview.guestId === guestId);
-    if (!isOwner) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-
-    // Check if interview is in-progress and startDateTime is older than 5 minutes
+    // An interview left in progress past its time limit (tab closed, crash) is closed here.
     if (interview.status === 'in-progress' && interview.startDateTime) {
-      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-      if (interview.startDateTime < fiveMinutesAgo) {
-        // Mark as completed if it's been more than 5 minutes
+      const limitMs = appConfig.interviewDurationSec * 1000;
+      const endTime = new Date(interview.startDateTime.getTime() + limitMs);
+      if (Date.now() > endTime.getTime() + STALE_GRACE_MS) {
         interview.status = 'completed';
+        interview.endDateTime = endTime;
         await interview.save();
+        // Older in-progress interviews have no session (the page used to start them on load).
+        if (interview.sessionId) {
+          await InterviewSession.updateOne(
+            { _id: interview.sessionId, status: 'active' },
+            { status: 'completed', endTime }
+          );
+        }
       }
     }
 
@@ -51,66 +57,6 @@ export async function GET(
     console.error('Error fetching interview:', error);
     return NextResponse.json(
       { error: 'Failed to fetch interview' },
-      { status: 500 }
-    );
-  }
-}
-
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const { userId } = await auth();
-    const { id } = await params;
-    
-    const body = await req.json();
-    const { status, guestId } = body;
-
-    if (!userId && !guestId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    if (
-      !status ||
-      !['scheduled', 'in-progress', 'completed'].includes(status)
-    ) {
-      return NextResponse.json({ error: 'Invalid status' }, { status: 400 });
-    }
-
-    await dbConnect();
-
-    const interview = (await Interview.findById(id)) as IInterview | null;
-
-    if (!interview) {
-      return NextResponse.json(
-        { error: 'Interview not found' },
-        { status: 404 }
-      );
-    }
-
-    // Check if user owns this interview
-    const isOwner = (userId && interview.userId === userId) || (guestId && interview.guestId === guestId);
-    if (!isOwner) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-
-    // Update status and set startDateTime if starting interview
-    interview.status = status;
-    if (status === 'in-progress') {
-      interview.startDateTime = new Date();
-    }
-
-    await interview.save();
-
-    return NextResponse.json({
-      success: true,
-      interview,
-    });
-  } catch (error) {
-    console.error('Error updating interview:', error);
-    return NextResponse.json(
-      { error: 'Failed to update interview' },
       { status: 500 }
     );
   }

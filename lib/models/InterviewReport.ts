@@ -75,7 +75,8 @@ export interface IFaceAnalytics {
 export interface IInterviewReport extends mongoose.Document {
   interviewId: string;
   sessionId: string;
-  userId: string;
+  userId?: string;
+  guestId?: string;
   jobTitle: string;
   mentorName: string;
   performanceAnalysis: IPerformanceAnalysis;
@@ -150,6 +151,7 @@ const InterviewReportSchema = new mongoose.Schema(
     interviewId: {
       type: String,
       required: true,
+      unique: true,
     },
     sessionId: {
       type: String,
@@ -157,7 +159,9 @@ const InterviewReportSchema = new mongoose.Schema(
     },
     userId: {
       type: String,
-      required: true,
+    },
+    guestId: {
+      type: String,
     },
     jobTitle: {
       type: String,
@@ -198,7 +202,6 @@ const InterviewReportSchema = new mongoose.Schema(
 );
 
 // Indexes for efficient queries
-InterviewReportSchema.index({ interviewId: 1 });
 InterviewReportSchema.index({ userId: 1 });
 InterviewReportSchema.index({ generatedAt: -1 });
 

@@ -28,8 +28,6 @@ const GuestUserSchema = new mongoose.Schema(
   }
 );
 
-GuestUserSchema.index({ guestId: 1 });
-
 const GuestUserModel = (mongoose.models.GuestUser as mongoose.Model<IGuestUser>) ||
   mongoose.model<IGuestUser>('GuestUser', GuestUserSchema);
 

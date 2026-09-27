@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 
 import Navbar from '@/components/navbar';
-import { cn } from '@/lib/utils';
+import { cn, guestHeaders } from '@/lib/utils';
 import { mentors } from '@/components/mentors';
 
 interface UserProfile {
@@ -98,12 +98,12 @@ export default function NewInterviewPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...guestHeaders(),
         },
         body: JSON.stringify({
           fileUrl: 'text-input',
           fileContent: resumeText,
           fileName: 'resume.txt',
-          guestId: localStorage.getItem('guestId'),
         }),
       });
 
@@ -141,13 +141,10 @@ export default function NewInterviewPage() {
       // Send file to server-side API route for Appwrite upload + AI processing
       const formData = new FormData();
       formData.append('resume', selectedFile);
-      const guestId = localStorage.getItem('guestId');
-      if (guestId) {
-        formData.append('guestId', guestId);
-      }
 
       const response = await fetch('/api/upload-resume', {
         method: 'POST',
+        headers: guestHeaders(),
         body: formData,
       });
 
@@ -198,11 +195,11 @@ export default function NewInterviewPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...guestHeaders(),
         },
         body: JSON.stringify({
           jobTitle,
           jobDescription,
-          guestId: localStorage.getItem('guestId'),
         }),
       });
 
@@ -242,13 +239,13 @@ export default function NewInterviewPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...guestHeaders(),
         },
         body: JSON.stringify({
           jobTitle,
           jobDescription,
           jobSummary,
           mentorId: selectedMentor,
-          guestId: localStorage.getItem('guestId'),
           resumeSummary,
         }),
       });

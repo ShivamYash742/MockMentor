@@ -85,6 +85,7 @@ const InterviewSessionSchema = new mongoose.Schema(
     interviewId: {
       type: String,
       required: true,
+      unique: true, // one session per interview; makes the 'start' upsert race-safe
     },
     userId: {
       type: String,
@@ -120,7 +121,6 @@ const InterviewSessionSchema = new mongoose.Schema(
 );
 
 // Index for efficient queries
-InterviewSessionSchema.index({ interviewId: 1 });
 InterviewSessionSchema.index({ userId: 1 });
 InterviewSessionSchema.index({ guestId: 1 });
 InterviewSessionSchema.index({ status: 1 });

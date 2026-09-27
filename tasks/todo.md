@@ -1,6 +1,6 @@
 # MockMentor — Scan Findings & 5-Step Plan
 
-> **Status: Step 1 done ✅. Waiting for your go-ahead before Step 2.**
+> **Status: Steps 1–2 done ✅. Waiting for your go-ahead before Step 3.**
 > One step at a time: I tick the boxes as I go and check in with you after each step.
 
 ---
@@ -129,29 +129,29 @@ Order: working flow → secure API → correct live experience → honest scores
   - the landing page and `/interview/new` render.
 
 ### Step 2 — Fix the interview → report flow
-- [ ] New `lib/requester.ts`:
+- [x] New `lib/requester.ts`:
   - `getRequester(req)`: Clerk `userId`, plus a guest id from an `x-guest-id` header;
   - `isOwner(doc, requester)`;
   - validate ObjectIds so bad ids return 404.
   - It replaces the copy-pasted ownership checks in the interview, interview-session and generate-report routes.
-- [ ] Client side: a small `guestHeaders()` helper, used at the ~20 fetch sites that send `guestId` today.
-- [ ] `interview-session`:
+- [x] Client side: a small `guestHeaders()` helper, used at the ~20 fetch sites that send `guestId` today.
+- [x] `interview-session`:
   - read the body once;
   - check ownership on every action;
   - make `start` idempotent (a refresh reuses the active session);
   - delete the unused `add_messages_batch` and `update_metrics` actions.
-- [ ] Guest limit: one atomic check-and-increment in `create-interview`, and remove the broken increment from `end`.
-- [ ] One timer, with the server as the source of truth:
+- [x] Guest limit: one atomic check-and-increment in `create-interview`, and remove the broken increment from `end`.
+- [x] One timer, with the server as the source of truth:
   - add `interviewDurationSec: 180` to `lib/appConfig.ts`;
   - delete the page-level timer and the auto-start PATCH in `app/interview/[id]/page.tsx`;
   - the session starts when the user clicks **Start** and returns `startTime`;
   - the countdown runs only while connected, calculated from `startTime`;
   - the server's stale auto-complete uses the config value plus a 2-minute grace period.
-- [ ] Completed interviews: pass `interviewId` and `sessionId` into `<InterviewComplete />`, so the report can still be generated or viewed later.
-- [ ] Models:
+- [x] Completed interviews: pass `interviewId` and `sessionId` into `<InterviewComplete />`, so the report can still be generated or viewed later.
+- [x] Models:
   - `InterviewReport`: make `userId` optional, add `guestId`, and make `interviewId` unique (check the DB for duplicates first);
   - `GuestUser`: remove the duplicate index.
-- [ ] New `GET /api/report/[id]` with an owner check, added to the public list in `middleware.ts`. The report page uses it, so opening the report page never triggers an AI call. If no report exists yet, it shows "not generated yet".
+- [x] New `GET /api/report/[id]` with an owner check, added to the public list in `middleware.ts`. The report page uses it, so opening the report page never triggers an AI call. If no report exists yet, it shows "not generated yet".
 - **Verify** (end-to-end, as a signed-in user and as a guest):
   - create → start → answer twice → end → generate → view report;
   - Mongo has one session with its messages and one report;
@@ -274,4 +274,60 @@ Order: working flow → secure API → correct live experience → honest scores
 - npm's allow-scripts policy skipped the install scripts for `@clerk/shared` and `unrs-resolver`. Lint and build work regardless. I didn't change your npm config.
 - The Mongoose "duplicate index on guestId" warning is scheduled for Step 2.
 - Face tracking now actually runs on real faces for the first time. The heuristics (stress, confidence and so on) have never processed live data, so expect them to need tuning. That's covered in Steps 4 and 5.
+- Nothing committed.
+
+### Step 2 — done (2026-09-27)
+**What changed**
+- **`lib/requester.ts`:** `getRequester` (Clerk user first, then the `x-guest-id` header), `isOwner` and `findOwned`. `findOwned` returns null for a bad ObjectId, a missing doc, or someone else's doc, so all three give a 404. Every route that used to take `guestId` from the body or query now uses it.
+- **Client:** `guestHeaders()` in `lib/utils.ts` is used at every fetch site. `guestId` is no longer sent in bodies, query strings or form data.
+- **`interview-session`:**
+  - the body is read once;
+  - every action checks ownership through the interview;
+  - `start` is an idempotent upsert (a unique index on `interviewId`), returns `startTime`, and gives 409 once the interview is completed;
+  - `add_messages_batch`, `update_metrics` and the unused `GET` were removed;
+  - `end` no longer increments the guest count.
+- **Guest limit:** an atomic `findOneAndUpdate({ interviewCount: { $lt: 1 } })` in `create-interview`.
+- **Timer:**
+  - `appConfig.interviewDurationSec = 180`;
+  - the page-level timer and the auto-start `PATCH` were removed (the `PATCH` route too);
+  - the countdown is calculated from the server session's `startTime`;
+  - an `exitingRef` guard stops the timer and the End button from both ending the interview;
+  - the server's stale auto-complete uses the limit plus a 2-minute grace, and closes the session as well.
+- **Completed page:** `<InterviewComplete>` gets `interviewId`, `sessionId` and `hasReport`, so a report can still be generated or viewed later.
+- **Models:**
+  - `InterviewReport`: `userId` is optional, `guestId` was added, and `interviewId` is unique;
+  - `InterviewSession`: `interviewId` is unique;
+  - `GuestUser`: the duplicate index was removed.
+- **`GET /api/report/[id]`:** read-only with an owner check, and public in `middleware.ts` along with `/report/(.*)`. It says "Report not generated yet" when there's no report.
+- **`generate-report`:** takes the session from the interview (never from the client), stores `guestId`, and returns an existing report before doing any work.
+- **Found while verifying:** `start` only updated interviews marked `scheduled`, so an interview the old page had auto-started (in progress, no session) was never linked to its session and could never get a report. It now matches any interview that isn't completed. Re-running it with the same values changes nothing.
+
+**Proof** (`next build` + `next start` against a throwaway `mongo:7` container, with placeholder keys)
+- `lint`, `typecheck`, `test` and `build` all pass.
+- A guest API end-to-end script passed all 29 checks:
+  - create → start → 4 messages → end → generate → view;
+  - a second interview gives 403, and an unknown guest gives 404;
+  - 5 parallel creates → exactly one 200;
+  - 2 parallel starts → one session; a repeat start keeps the same session and `startTime`;
+  - start after the interview ends → 409;
+  - another guest gets 404 on every route, no identity gets 401, a malformed id gets 404;
+  - the report gives 404 "not generated yet" before generation; generating a second time returns the existing report.
+- In Mongo: one session with 4 messages, one report with `guestId` set and no `userId`, and the interview is `completed` with its `reportId`. The unique indexes exist, and the duplicate-index warning is gone.
+- Stale interviews: still in progress at 4 minutes, and completed at 6 minutes along with their session.
+- The legacy in-progress interview gets its `sessionId` linked, and `startDateTime` matches the session.
+
+**Not verified: needs real keys**
+- **Signed-in (Clerk) flow and all browser UI:**
+  - the browser couldn't load pages, because Clerk's dev handshake rejects placeholder keys;
+  - this covers the countdown and refresh behaviour in the page and the Generate/View buttons;
+  - the logic was checked through the API (`startTime` is reused) and by reading the code.
+- **Real report content:** with a placeholder `GROQ_API_KEY`, `generate-report` saved the **made-up fallback report**. That's the existing behaviour, and Step 5 removes it.
+
+**Before you deploy:** the new unique indexes fail to build if production already has duplicates. Sessions could never be created before this fix, so there should be none, but check first:
+`db.interviewreports.aggregate([{$group:{_id:"$interviewId",n:{$sum:1}}},{$match:{n:{$gt:1}}}])` (and the same for `interviewsessions`). An empty result means it's safe.
+
+**Open risks**
+- Any `guestId` string is still accepted as an identity if it exists in the header. Checking that it's a real `GuestUser` is Step 3.
+- `add_message` doesn't enforce the time limit yet. `ai-chat` is covered in Step 3.
+- `next build` output in `.next/` has placeholder public env vars baked in. Rebuild with real env vars before running `next start`.
 - Nothing committed.

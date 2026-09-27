@@ -38,6 +38,8 @@ import InterviewComplete from './interview-complete';
 import { useFaceTracker } from '@/hooks/useFaceTracker';
 import { StressHUD } from '@/components/interview/StressHUD';
 import type { FaceSummary } from '@/lib/mlSidecar';
+import { appConfig } from '@/lib/appConfig';
+import { guestHeaders } from '@/lib/utils';
 
 const Interview = ({
   interviewId,
@@ -61,6 +63,7 @@ const Interview = ({
   const [message, setMessage] = useState('');
   const [isInterviewComplete, setIsInterviewComplete] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
 
   const [conversationMetrics] = useState({
     totalPauses: 0,
@@ -71,9 +74,10 @@ const Interview = ({
     wordsSpoken: 0,
   });
 
-  // Timer state
-  const [startTime, setStartTime] = useState(new Date());
-  const [remainingTime, setRemainingTime] = useState(180); // 3 minutes in seconds
+  // Timer state: startTime comes from the server session, so a refresh keeps the clock.
+  const [startTime, setStartTime] = useState<Date | null>(null);
+  const [remainingTime, setRemainingTime] = useState(appConfig.interviewDurationSec);
+  const exitingRef = useRef(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -128,60 +132,31 @@ const Interview = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contextMessages, isSidecarAvailable]);
 
-  // Timer effect - countdown from 3 minutes
+  // Countdown runs once the session has started
   useEffect(() => {
-    const interval = setInterval(() => {
-      const elapsed = Math.floor(
-        (new Date().getTime() - startTime.getTime()) / 1000
-      );
-      const remaining = Math.max(0, 180 - elapsed);
-      setRemainingTime(remaining);
-
-      // Auto-exit when time is up
-      if (remaining === 0) {
-        exitInterview();
-      }
-    }, 1000);
-
+    if (!startTime || isInterviewComplete) return;
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000);
+      setRemainingTime(Math.max(0, appConfig.interviewDurationSec - elapsed));
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startTime]);
+  }, [startTime, isInterviewComplete]);
 
-  // Initialize backend interview session
+  // Auto-exit when time is up (a separate effect so exitInterview sees current state)
   useEffect(() => {
-    if (interviewId && !sessionId) {
-      initializeSession();
-    }
+    if (startTime && remainingTime === 0) exitInterview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interviewId]);
-
-  const initializeSession = async () => {
-    try {
-      const guestId = localStorage.getItem('guestId');
-      const body = { interviewId, action: 'start', ...(guestId && { guestId }) };
-      const response = await fetch('/api/interview-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      const data = await response.json();
-      if (data.success && data.session) {
-        setSessionId(data.session.id);
-      }
-    } catch (error) {
-      console.error('Error initializing session:', error);
-    }
-  };
+  }, [startTime, remainingTime]);
 
   const saveMessageToSession = useCallback(async (messageData: Record<string, unknown>) => {
     if (!sessionId) return;
     try {
-      const guestId = localStorage.getItem('guestId');
-      const body = { interviewId, action: 'add_message', messageData, ...(guestId && { guestId }) };
+      const body = { interviewId, action: 'add_message', messageData };
       await fetch('/api/interview-session', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guestHeaders() },
         body: JSON.stringify(body),
       });
     } catch (error) {
@@ -251,8 +226,25 @@ const Interview = ({
     }
   }, [isCameraOn]); // Note: mic state is handled by the STT hook directly
 
-  // Explicit user start handler (Fixes browser gesture requirements for TTS/Microphone)
-  const handleStartSession = () => {
+  // Explicit user start handler (Fixes browser gesture requirements for TTS/Microphone).
+  // The server session is created (or, after a refresh, reused) first so every message is saved.
+  const handleStartSession = async () => {
+    setStartError(null);
+    try {
+      const response = await fetch('/api/interview-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...guestHeaders() },
+        body: JSON.stringify({ interviewId, action: 'start' }),
+      });
+      const data = await response.json();
+      if (!data.success) throw new Error(data.error || 'Could not start the interview');
+      setSessionId(data.session.id);
+      setStartTime(new Date(data.session.startTime));
+    } catch (error) {
+      console.error('Error starting session:', error);
+      setStartError(error instanceof Error ? error.message : 'Could not start the interview');
+      return;
+    }
     start(knowledgeBase, role).catch(console.error);
   };
   
@@ -261,11 +253,6 @@ const Interview = ({
   useEffect(() => {
     if (sessionState === VoiceSessionState.CONNECTED) {
       setLoading(false);
-      
-      // Start real timer when connected
-      if (!hasWelcomed.current) {
-        setStartTime(new Date());
-      }
 
       if (!hasWelcomed.current) {
         hasWelcomed.current = true;
@@ -327,6 +314,8 @@ const Interview = ({
   };
 
   const exitInterview = async () => {
+    if (exitingRef.current) return; // timer and End button can both fire
+    exitingRef.current = true;
     setExitLoading(true);
 
     // Collect face analytics before stopping tracker (3.3: merge per-question snapshots)
@@ -337,7 +326,7 @@ const Interview = ({
         ? { questionSnapshots: questionSnapshotsRef.current }
         : null;
 
-    const totalDuration = Date.now() - startTime.getTime();
+    const totalDuration = startTime ? Date.now() - startTime.getTime() : 0;
     const averagePauseLength = conversationMetrics.totalPauses > 0 
       ? conversationMetrics.totalPauseTime / conversationMetrics.totalPauses : 0;
       
@@ -364,11 +353,10 @@ const Interview = ({
 
     if (sessionId) {
       try {
-        const guestId = localStorage.getItem('guestId');
-        const body = { interviewId, action: 'end', metricsData: finalMetrics, ...(guestId && { guestId }) };
+        const body = { interviewId, action: 'end', metricsData: finalMetrics };
         await fetch('/api/interview-session', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...guestHeaders() },
           body: JSON.stringify(body),
         });
       } catch (error) {
@@ -446,9 +434,12 @@ const Interview = ({
                 </div>
                 
                 {sessionState === VoiceSessionState.INACTIVE ? (
-                   <Button onClick={handleStartSession} size="lg" className="px-8 shadow-md">
-                     <Phone className="w-4 h-4 mr-2" /> Start Interview
-                   </Button>
+                  <>
+                    <Button onClick={handleStartSession} size="lg" className="px-8 shadow-md">
+                      <Phone className="w-4 h-4 mr-2" /> Start Interview
+                    </Button>
+                    {startError && <p role="alert" className="text-sm text-destructive">{startError}</p>}
+                  </>
                 ) : (
                   <h3 className="text-xl font-medium tracking-wide">
                     {sessionState === VoiceSessionState.PAUSED ? "Paused" : isAvatarTalking ? "Speaking..." : sessionState === VoiceSessionState.CONNECTED ? "Listening..." : "Connecting..."}

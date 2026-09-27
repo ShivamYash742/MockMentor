@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { getRequester } from '@/lib/requester';
 import { generateWithGroq } from '@/lib/groq';
 import { parsePDF, truncateForAI } from '@/lib/pdf';
 import dbConnect from '@/lib/mongodb';
@@ -8,18 +8,17 @@ import { getResumeSummaryPrompt } from '@/lib/promptHelper';
 
 export async function POST(req: NextRequest) {
   try {
-    const { userId } = await auth();
+    const requester = await getRequester(req);
     const body = await req.json();
-    const { fileUrl, fileContent, fileName, guestId } = body;
+    const { fileUrl, fileContent, fileName } = body;
 
-    if (!userId && !guestId) {
+    if (!requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
     console.log('process-resume called with:', { 
       fileUrl, 
       fileName,
-      guestId,
       fileContentType: typeof fileContent,
       fileContentLength: fileContent?.length,
       isBase64PDF: fileContent?.startsWith('data:application/pdf')
@@ -90,9 +89,9 @@ export async function POST(req: NextRequest) {
     await dbConnect();
 
     let userProfile = null;
-    if (userId) {
+    if (requester.userId) {
       userProfile = await UserProfile.findOneAndUpdate(
-        { userId },
+        { userId: requester.userId },
         {
           resumeUrl: fileUrl,
           resumeSummary,
