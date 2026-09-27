@@ -11,9 +11,12 @@ import {
   EMA, WindowSmooth, aggregateSession, AggregatedSummary,
   EmotionScores,
 } from '@/lib/faceAnalysis';
+import { loadEmotionModel, faceCropBox, EMOTION_INPUT_SIZE, type EmotionClassifier } from '@/lib/emotionModel';
 
 const FRAME_INTERVAL_MS = 100; // 10 fps — smoother blink detection
 const CALIBRATION_FRAMES = 90;
+// Emotion model sampling rate; between samples the last smoothed reading is reused.
+const EMOTION_INTERVAL_MS = 1000;
 
 interface FrameRecord {
   ts: number;
@@ -64,6 +67,14 @@ export function useFaceTracker(
   const gazeEMARef = useRef(new EMA(0.3));
   const handTrackerRef = useRef(new HandTracker(8));
 
+  // Trained emotion model (lib/emotionModel.ts). Until it loads — or if it can't — emotion comes
+  // from the blendshape heuristic instead. Model samples arrive ~1/s, so they're smoothed less.
+  const emotionModelRef = useRef<EmotionClassifier | null>(null);
+  const emotionBusyRef = useRef(false);
+  const lastEmotionAtRef = useRef(-Infinity);
+  const emotionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const newEmotionEMA = () => new EMA(emotionModelRef.current ? 0.5 : 0.25);
+
   // Calibration
   const calRef = useRef({
     frameCount: 0,
@@ -78,6 +89,13 @@ export function useFaceTracker(
     if (!enabled || initAttemptedRef.current) return;
 
     initAttemptedRef.current = true;
+
+    loadEmotionModel()
+      .then((classify) => {
+        emotionModelRef.current = classify;
+        emotionEMARef.current = newEmotionEMA();
+      })
+      .catch((err) => console.warn('Emotion model unavailable, using blendshape heuristic:', err));
 
     (async () => {
       try {
@@ -174,7 +192,28 @@ export function useFaceTracker(
         happy: 0, sad: 0, angry: 0, surprised: 0, fear: 0, disgust: 0, neutral: 1,
       };
       let emotions = defaultEmotions;
-      if (faceDetected && result.faceBlendshapes && result.faceBlendshapes.length > 0) {
+      const emotionModel = emotionModelRef.current;
+      if (faceDetected && emotionModel) {
+        if (!emotionBusyRef.current && ts - lastEmotionAtRef.current >= EMOTION_INTERVAL_MS) {
+          const rgba = readFaceCrop(video, result.faceLandmarks[0]);
+          if (rgba) {
+            emotionBusyRef.current = true;
+            lastEmotionAtRef.current = ts;
+            const ema = emotionEMARef.current;
+            emotionModel(rgba)
+              .then((scores) => {
+                if (ema === emotionEMARef.current) ema.update(scores); // drop results from before a reset
+              })
+              .catch((err) => {
+                console.warn('Emotion model failed, switching to blendshape heuristic:', err);
+                emotionModelRef.current = null;
+                emotionEMARef.current = newEmotionEMA();
+              })
+              .finally(() => { emotionBusyRef.current = false; });
+          }
+        }
+        emotions = (emotionEMARef.current.value as EmotionScores | null) ?? defaultEmotions;
+      } else if (faceDetected && result.faceBlendshapes && result.faceBlendshapes.length > 0) {
         const rawEmotions = classifyEmotions(result.faceBlendshapes[0].categories);
         const smoothed = emotionEMARef.current.update(rawEmotions);
         emotions = smoothed ?? rawEmotions;
@@ -281,6 +320,20 @@ export function useFaceTracker(
     }
   }, [videoRef]);
 
+  // Face crop from the current video frame, resized to the model's input on a reusable canvas.
+  function readFaceCrop(video: HTMLVideoElement, landmarks: Array<{ x: number; y: number }>) {
+    const box = faceCropBox(landmarks, video.videoWidth, video.videoHeight);
+    if (!box) return null;
+    const canvas = (emotionCanvasRef.current ??= Object.assign(document.createElement('canvas'), {
+      width: EMOTION_INPUT_SIZE,
+      height: EMOTION_INPUT_SIZE,
+    }));
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, EMOTION_INPUT_SIZE, EMOTION_INPUT_SIZE);
+    return ctx.getImageData(0, 0, EMOTION_INPUT_SIZE, EMOTION_INPUT_SIZE).data;
+  }
+
   // ── Start/stop capture interval ────────────────────────────────────
   useEffect(() => {
     if (isConnected && landmarkerRef.current) {
@@ -317,7 +370,8 @@ export function useFaceTracker(
     processingStartedRef.current = false;
     frameLogRef.current = [];
     earSmoothRef.current = new WindowSmooth(3);
-    emotionEMARef.current = new EMA(0.25);
+    emotionEMARef.current = newEmotionEMA();
+    lastEmotionAtRef.current = -Infinity; // sample the next question straight away
     stressEMARef.current = new EMA(0.2);
     headPoseEMARef.current = new EMA(0.3);
     gazeEMARef.current = new EMA(0.3);

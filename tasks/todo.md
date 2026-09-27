@@ -444,3 +444,95 @@ Order: working flow → secure API → correct live experience → honest scores
 - Please do one real run before trusting this fully: complete an interview with the camera on, generate a report, and check that the numbers in it look like they came from what you actually said — not the same numbers every time.
 
 This closes out the original 5-step plan. Nothing has been committed — see the note below.
+
+---
+
+## Model upgrade: emotion detection in `model/` (2026-09-27)
+
+Plan: `~/.claude/plans/synchronous-tinkering-toast.md` (approved). Scope: the Python sidecar only; integrating it into the app is a separate, later step.
+
+**What changed**
+- **Emotion is now a trained model.** `tracker/emotion.py` has `EmotionModel`: HSEmotion `enet_b2_7` (EfficientNet-B2 trained on AffectNet, Apache-2.0), run with `onnxruntime` on CPU. I called onnxruntime directly instead of using the `hsemotion-onnx` package, which is unmaintained since 2022, pulls in an unused `onnx` import, and amounts to about 15 lines of preprocessing. Those lines mirror the reference implementation. The old blendshape rulebook `classify_emotions()` is untouched and becomes the fallback if the model can't load.
+- **Periodic sampling.** Emotion runs at most once per `EMOTION_INTERVAL_S = 1.0` s (server's monotonic clock, not the client `ts`); between samples the last smoothed reading is reused. Blink, gaze, and head pose still run every frame. The EMA alpha is 0.5 for model samples (0.25 kept for the per-frame heuristic).
+- **Face crop.** `tracker/face.py` `face_crop()` takes a tight bounding box from the 478 landmarks with no margin, clipped to the frame. A 20% margin dropped the model's confidence on a smiling face from 0.91 to 0.69.
+- **Colour space is RGB.** The library's own reference test converts BGR→RGB before cropping (a web summary earlier had this wrong), and the pipeline already had an `rgb` array.
+- **Bug fixed along the way: the deployed server had no models.** `*.task` files are gitignored and only `new.py` downloaded them (and `new.py` is excluded from the Docker image), so `server.py` on a fresh Render deploy could never start its pipeline. Downloads now live in `tracker.model_path()`, used by every entry point. They go to a `.part` temp file first so an interrupted download can't leave a truncated model. The emotion weights are pinned to EmotiEffLib commit `520a051`. `new.py` lost its duplicate download block.
+- **Pinned `requirements.txt`** to the versions verified here. The unpinned `mediapipe>=0.10.14` had silently resolved to 1.0.1 (a new major version); it works, and is now locked.
+- `.gitignore` adds `model/models/` (the 30 MB `.onnx` wasn't covered by `*.task`). `model/.dockerignore` adds `.venv/`.
+
+**Proof** (Python 3.11 venv at `model/.venv`, gitignored)
+- On EmotiEffLib's labelled test image (3 faces; reference labels Happiness, Anger, Fear), the new model gets all three: **happy 0.91, angry 0.89, fear 0.49**. The old heuristic also picks the right top label on these, but barely: the smiling face scored happy 0.37 vs angry 0.30.
+- `model/test_pipeline.py` (plain asserts, `python test_pipeline.py`): reference labels, crop edge-clipping, sampling gate (second frame inside the interval reuses; re-samples after), heuristic fallback. Mutation-checked: swapping two labels, or sampling every frame, each makes it fail.
+- From an empty `models/`, `Pipeline()` downloads all 4 files and loads the emotion model, with no `.part` leftovers.
+- The unchanged `server.py` works end to end: `/api/health` returns ready, a real frame over `/ws/{id}` comes back `happy` 0.92, and `summary` has exactly the key set the app's `FaceSummary` expects.
+- Cost: **31 ms/face single-threaded** (9 ms multi-threaded on this 16-core machine), about **180 MB extra RAM**.
+
+**Open / for the integration step**
+- **Not verified:** accuracy on a live webcam. Run `cd model && .venv/bin/python new.py` and try a few expressions.
+- **RAM:** about 180 MB for the emotion model, on top of three MediaPipe models. Render's free tier is 512 MB; measure the whole process there before relying on it.
+- **Existing, not fixed:** `server.py` uses one global `Pipeline` shared by all WebSocket sessions, so blink counts, calibration, and emotion smoothing leak between concurrent users. It must be per-session before real integration.
+- The MediaPipe face detector is the short-range (webcam-distance) model. That fits an interview webcam, but it won't find small faces in wide shots.
+- Nothing committed.
+
+---
+
+## Plan: integrate the emotion model into the app (in the browser)
+
+> **Status: done ✅ (2026-09-27). Review below.**
+
+**Decision (yours):** run the same `enet_b2_7.onnx` in the browser with `onnxruntime-web`, replacing the old blendshape rulebook the app still uses (`classifyEmotions` in `lib/faceAnalysis.ts`). No server, and video never leaves the browser. The Python sidecar in `model/` stays as the reference implementation and test harness; nothing deploys it.
+
+**Why the browser path fits:** the app already runs face tracking client-side. `lib/faceAnalysis.ts` is a TypeScript port of the Python tracker, and `hooks/useFaceTracker.ts` runs MediaPipe in the browser. Nothing connects to the sidecar today (`NEXT_PUBLIC_ML_SIDECAR_URL` is set in `.env` but never read). So this is one swap inside the existing pipeline, not a new architecture.
+
+### Changes
+- [x] **`package.json`:** add `onnxruntime-web@1.30.0`, the same version as the Python `onnxruntime` I verified against.
+- [x] **`lib/faceAnalysis.ts`** (owns emotion logic, pure and testable in Node): add
+  - `emotionModelInput(rgba, size)`: RGBA pixels → Float32 CHW tensor, `/255`, ImageNet normalization. Same preprocessing as the Python `EmotionModel`.
+  - `emotionModelScores(logits)`: softmax, then map to the app's 7 keys in the model's output order (`angry, disgust, fear, happy, neutral, sad, surprised`).
+  - `classifyEmotions` stays as the fallback.
+- [x] **`hooks/useFaceTracker.ts`:**
+  - Load the model next to the existing MediaPipe init: `import('onnxruntime-web')` loaded dynamically (client-only). Its `.wasm` comes from jsDelivr, the same pattern MediaPipe's wasm already uses. The model comes from the pinned GitHub URL (commit `520a051`; CORS `*`, ETag-cached).
+  - If loading fails (network, old browser), warn once and keep using `classifyEmotions`. Emotion never goes blank.
+  - In `processFrame`, run a sample only when a face is detected, the model is ready, at least 1 s has passed since the last sample, and no inference is already running. A sample crops the face's landmark bounding box from the video onto a reusable 260×260 canvas (one `drawImage` does crop and resize), runs inference asynchronously, and feeds the result into the emotion EMA. Between samples the frame reuses the EMA's last value. This mirrors the Python `Pipeline`, including EMA alpha 0.5 in model mode.
+  - `resetSession()` (called between questions) also resets the sample clock, so the next question samples immediately.
+- [x] **No changes needed** to `components/interview.tsx`, `StressHUD.tsx`, the report pipeline, or the face-analytics sanitizer. The emotion shape (7 keys + `dominant`) is unchanged.
+
+### Verify
+- [x] `node --test` on the two pure functions: tensor layout and normalization on a synthetic pixel buffer, plus label order and softmax.
+- [x] **Parity check (the key proof):** Python saves the three reference faces' 260×260 crops and its probabilities into the gitignored `model/models/`. A Node script runs `onnxruntime-web` (its wasm backend, the same library the browser uses) with the new TS functions on the same pixels. It must match Python within about 1e-3 and give happy, angry, fear.
+- [x] Measure model load time and per-sample inference time on the wasm backend.
+- [x] `lint`, `typecheck`, `test`, `build`.
+- [ ] **Browser check:** the interview page can't open in this environment with placeholder keys (Clerk). With your real `.env`, `/test-face` would work, but it needs camera access in your Chrome, so I'll ask before doing that, or you run it yourself.
+
+### Risks, known up front
+- **First-load download:** about 30 MB of model plus about 10 MB of wasm per browser, once, then cached. The old heuristic covers emotion until it arrives. If that's too heavy for candidates on slow connections, the next step is an int8-quantized model (about 8 MB, re-validated on the reference faces) or self-hosting the file.
+- **Main-thread cost:** wasm inference on the main thread takes up to a few hundred ms per sample on a slow laptop, once a second. If the measurement shows it would stutter the interview UI, I'll run it in a worker (`ort.env.wasm.proxy = true`) and verify that builds under Next.js.
+- **Hands and posture stay stubbed**, as today. They need MediaPipe's hand and pose models in the browser; that's a separate change if you want it.
+
+### Commits (after everything above passes)
+Two commits: (1) the `model/` upgrade already done, (2) this integration. Tell me if you'd rather have one.
+
+### Integration: done (2026-09-27)
+**What changed**
+- **`lib/emotionModel.ts`** (new): the browser side of the same model. It has the pure preprocessing and mapping (`faceCropBox`, `toModelInput`, `toEmotionScores`, mirroring the Python `face_crop` and `EmotionModel`), `createEmotionClassifier(ort, model)`, and `loadEmotionModel()`. That last one dynamically imports `onnxruntime-web/wasm` (the CPU-only build; the default entry would pull the 28 MB WebGPU build). The runtime's `.wasm` comes from jsDelivr (pinned `1.30.0`, immutable cache). The weights come from the pinned GitHub commit. This went in its own module rather than `lib/faceAnalysis.ts` as the plan said, which keeps onnxruntime out of the landmark-math file and lets Node tests import the pure functions.
+- **Inference runs in a Web Worker** (`ort.env.wasm.proxy = true`). Measured in real Chrome, one inference is about 140 ms single-threaded. On the main thread the page's event loop didn't run once during about 415 ms of inference, a full freeze. In the worker, the longest main-thread stall was 15–36 ms. The measuring probe was calibrated against a known 200 ms busy-wait, which it read as exactly 200 ms.
+- **`hooks/useFaceTracker.ts`:**
+  - Starts loading the model alongside MediaPipe. The blendshape heuristic covers emotion until the model is ready, and permanently if loading fails.
+  - At most once per second, and only when a face is detected and no inference is already running, it crops the landmark box from the video onto a reusable 260×260 canvas and classifies it asynchronously.
+  - Results feed the emotion EMA (alpha 0.5 in model mode). Results that arrive after a between-questions reset are dropped, and `resetSession()` makes the next question sample immediately.
+  - An inference failure switches to the heuristic for the rest of the session. The emotion data keeps the same shape, so `interview.tsx`, `StressHUD`, reports, and the sanitizer are unchanged. `/test-face` gets the model too.
+- `eslint.config.mjs` ignores `model/.venv/**`: `npm run lint` was scanning JavaScript inside the Python venv.
+
+**Proof**
+- **Parity with Python:** `lib/emotionModel.test.ts` runs the same TS code through `onnxruntime-web` (its Node build, same version) on the three reference faces. It matches the Python probabilities within 1e-3 and gets happy, angry, fear. The fixture (`model/models/_parity.json`) is written by `cd model && .venv/bin/python test_pipeline.py`; without it the test is skipped. Swapping two labels fails both the unit test and the parity test.
+- **Real Chrome** (standalone harness page importing the compiled `lib/emotionModel.ts`, no camera, no Clerk): PASS. It matches Python to within about 3e-7 on all three faces, first using the runtime from jsDelivr, then using **Next's own emitted `ort.wasm.bundle.min.<hash>.mjs`** from `.next/static/media`, which is the file the production worker loads. First load took 14.5 s cold (downloading about 44 MB) and 0.2–1.1 s once cached.
+- `lint`, `typecheck`, `test` (19/19), `build`. onnxruntime is a separate 70 KB lazy chunk; `/interview/[id]` first-load JS went 189 → 191 kB.
+
+**Not verified**
+- **The live interview page itself** (camera → canvas crop → model inside the running Next app). With placeholder keys, Clerk blocks every page here. Covered separately: the model and preprocessing (parity), webpack's worker asset (harness), and compile and bundling (build). Please do one real interview with the camera on. The console should show no `Emotion model unavailable`, and the HUD's emotion should now track your expression, updating about once a second.
+- **Canvas resize vs OpenCV resize:** the browser's bilinear downscale isn't pixel-identical to `cv2.resize`, so live scores will differ slightly from Python's. The parity test feeds identical pixels on purpose.
+
+**Known costs / follow-ups**
+- **First visit per browser downloads about 44 MB** (30 MB model plus 14 MB wasm), cached after that. If that's too much for candidates, the next step is an int8-quantized model (about 8 MB, re-validated on the reference faces) and/or hosting the model yourself.
+- Next's build also emits an unused 14 MB copy of the wasm into `.next/static/media`. It costs deploy size only, since the runtime loads the jsDelivr copy.
+- Hands and posture are still stubs in the browser tracker.
