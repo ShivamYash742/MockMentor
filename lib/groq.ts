@@ -10,7 +10,7 @@ export const groq = createGroq({
 });
 
 const FALLBACK_MODELS = [
-  'openai/gpt-oss-20b',
+  'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
 ] as const;
 
