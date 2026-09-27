@@ -536,3 +536,20 @@ Two commits: (1) the `model/` upgrade already done, (2) this integration. Tell m
 - **First visit per browser downloads about 44 MB** (30 MB model plus 14 MB wasm), cached after that. If that's too much for candidates, the next step is an int8-quantized model (about 8 MB, re-validated on the reference faces) and/or hosting the model yourself.
 - Next's build also emits an unused 14 MB copy of the wasm into `.next/static/media`. It costs deploy size only, since the runtime loads the jsDelivr copy.
 - Hands and posture are still stubs in the browser tracker.
+
+---
+
+## Public emotion demo page: `/emotion-demo` (2026-09-27)
+- **New `app/emotion-demo/page.tsx`**: public, no sign-in, works in production. Camera preview, a live dominant emotion with 7 bars, a status badge (loading / model running / basic mode fallback), a privacy line ("runs entirely in your browser"), a turn-off button, and a CTA to start an interview. The model (about 44 MB) only downloads after the visitor clicks **Turn on camera**. It reuses `useFaceTracker`, so it runs exactly what interviews run. `middleware.ts` adds `/emotion-demo` to the public routes.
+- **`useFaceTracker` now exposes `emotionSource`** (`loading | model | heuristic`) for the badge.
+- **Bug fixed in `useFaceTracker`** (affected the interview page's camera button too): turning the camera off closed the face detector, and a once-only init flag stopped it from ever re-initialising, so face tracking died for the rest of the session after one off/on. Now it re-initialises on each enable, a late-finishing init after the camera went off closes itself instead of leaking, and the emotion model loads once per page.
+
+**Proof** (real Chrome, `next dev` with your real `.env`, only `/emotion-demo` loaded; no API or database calls made):
+- Renders in dark and light mode with no console errors from the page. At phone width (390 px, via an iframe) it stacks with no horizontal scroll.
+- **End to end without a camera:** `getUserMedia` was swapped for a canvas stream playing the model authors' reference faces, and the real **Turn on camera** button was clicked. The badge showed "Model running"; happy read 91%, angry 89–90%, fear 55%, matching the Python reference.
+- **Camera toggle fix:** off → on twice; tracking resumed each time and followed the new face.
+- `lint`, `typecheck`, `test` (19/19), `build` (`/emotion-demo` is static, 4.6 kB page JS).
+
+**Notes**
+- The dev overlay's "1 issue" is MediaPipe's own startup line ("Created TensorFlow Lite XNNPACK delegate for CPU") printed via `console.error`. It predates this change and is harmless.
+- Not linked from anywhere yet (landing page / navbar). Nothing committed.

@@ -42,10 +42,12 @@ export function useFaceTracker(
   const [lastFrame, setLastFrame] = useState<FaceResult | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isSidecarAvailable, setIsSidecarAvailable] = useState(false);
+  // Which engine produces the emotion readings: the trained model, or the blendshape fallback.
+  const [emotionSource, setEmotionSource] = useState<'loading' | 'model' | 'heuristic'>('loading');
 
   const landmarkerRef = useRef<FaceLandmarker | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const initAttemptedRef = useRef(false);
+  const emotionLoadStartedRef = useRef(false);
   const frameLogRef = useRef<FrameRecord[]>([]);
   const frameErrorWarnedRef = useRef(false);
   const startTimeRef = useRef(Date.now());
@@ -86,16 +88,25 @@ export function useFaceTracker(
 
   // ── Initialize MediaPipe ───────────────────────────────────────────
   useEffect(() => {
-    if (!enabled || initAttemptedRef.current) return;
+    if (!enabled) return;
+    // Set by the cleanup below; an init that finishes after the camera turned off must not
+    // resurrect a landmarker nobody will close.
+    let cancelled = false;
 
-    initAttemptedRef.current = true;
-
-    loadEmotionModel()
-      .then((classify) => {
-        emotionModelRef.current = classify;
-        emotionEMARef.current = newEmotionEMA();
-      })
-      .catch((err) => console.warn('Emotion model unavailable, using blendshape heuristic:', err));
+    // The emotion model is loaded once per page (it survives the camera being toggled).
+    if (!emotionLoadStartedRef.current) {
+      emotionLoadStartedRef.current = true;
+      loadEmotionModel()
+        .then((classify) => {
+          emotionModelRef.current = classify;
+          emotionEMARef.current = newEmotionEMA();
+          setEmotionSource('model');
+        })
+        .catch((err) => {
+          console.warn('Emotion model unavailable, using blendshape heuristic:', err);
+          setEmotionSource('heuristic');
+        });
+    }
 
     (async () => {
       try {
@@ -128,20 +139,29 @@ export function useFaceTracker(
           landmarker = await FaceLandmarker.createFromOptions(vision, landmarkerOptions('CPU'));
         }
 
+        if (cancelled) {
+          landmarker.close();
+          return;
+        }
         landmarkerRef.current = landmarker;
         setIsConnected(true);
         setIsSidecarAvailable(true);
         processingStartedRef.current = false;
       } catch (err) {
+        if (cancelled) return;
         console.error('FaceLandmarker init failed:', err);
         setIsConnected(false);
         setIsSidecarAvailable(false);
       }
     })();
 
+    // Camera turned off (or unmount): tear down so turning it back on re-initialises. This used
+    // to close the landmarker with no way to re-create it, so face tracking died after a toggle.
     return () => {
+      cancelled = true;
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
+      setIsConnected(false);
     };
   }, [enabled]);
 
@@ -208,6 +228,7 @@ export function useFaceTracker(
                 console.warn('Emotion model failed, switching to blendshape heuristic:', err);
                 emotionModelRef.current = null;
                 emotionEMARef.current = newEmotionEMA();
+                setEmotionSource('heuristic');
               })
               .finally(() => { emotionBusyRef.current = false; });
           }
@@ -378,5 +399,5 @@ export function useFaceTracker(
     handTrackerRef.current = new HandTracker(8);
   }, []);
 
-  return { lastFrame, isConnected, isSidecarAvailable, requestSummary, resetSession };
+  return { lastFrame, isConnected, isSidecarAvailable, emotionSource, requestSummary, resetSession };
 }
