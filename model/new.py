@@ -7,7 +7,6 @@ Usage: python new.py
 import os
 import sys
 import time
-import urllib.request
 
 import cv2
 import numpy as np
@@ -16,33 +15,7 @@ import mediapipe as mp
 # ── ensure model/ is importable ─────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ── download model files if absent ──────────────────────────────────────────
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-os.makedirs(MODEL_DIR, exist_ok=True)
-
-MODELS = {
-    "face_landmarker.task": (
-        "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
-        "face_landmarker/float16/1/face_landmarker.task"
-    ),
-    "hand_landmarker.task": (
-        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-        "hand_landmarker/float16/1/hand_landmarker.task"
-    ),
-    "pose_landmarker_lite.task": (
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-        "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
-    ),
-}
-
-for name, url in MODELS.items():
-    path = os.path.join(MODEL_DIR, name)
-    if not os.path.exists(path):
-        print(f"Downloading {name}...")
-        urllib.request.urlretrieve(url, path)
-        print(f"  ✓ {name}")
-
-# ── import tracker package (after models exist) ──────────────────────────────
+# Pipeline() downloads any missing model files itself.
 from tracker import Pipeline
 from tracker.face import LEFT_EYE, RIGHT_EYE
 

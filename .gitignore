@@ -13,6 +13,7 @@ model/.venv/
 
 # MediaPipe models and local data dumps
 *.task
+model/models/
 model/data/*.json
 
 .pnp.*

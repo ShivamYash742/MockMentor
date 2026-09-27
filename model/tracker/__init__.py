@@ -4,6 +4,7 @@ Call Pipeline.process(frame_bgr, timestamp_s) → FrameResult.
 """
 import os
 import time
+import urllib.request
 import numpy as np
 
 # ── Headless / Render compatibility ──────────────────────────────────────────
@@ -17,8 +18,8 @@ os.environ.setdefault("EGL_PLATFORM", "surfaceless")
 import mediapipe as mp
 
 
-from .face import FaceTracker, eye_aspect_ratio, LEFT_EYE, RIGHT_EYE
-from .emotion import classify_emotions, dominant_emotion
+from .face import FaceTracker, eye_aspect_ratio, face_crop, LEFT_EYE, RIGHT_EYE
+from .emotion import EmotionModel, classify_emotions, dominant_emotion
 from .gaze import compute_gaze
 from .hands import HandTracker
 from .pose import decompose_head_pose, compute_posture
@@ -33,21 +34,45 @@ PoseLandmarker = mp.tasks.vision.PoseLandmarker
 PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
-_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
+_MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models"))
+
+# Downloaded on first use. Model files are gitignored, so without this a fresh deploy (server.py)
+# had no models at all — only new.py used to download them.
+_MODEL_URLS = {
+    "face_landmarker.task": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+    "hand_landmarker.task": "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+    "pose_landmarker_lite.task": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+    # HSEmotion enet_b2_7, pinned to a commit so the weights can't change under us.
+    "enet_b2_7.onnx": "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/520a051c64cd191521e5934655314e769a319684/models/affectnet_emotions/onnx/enet_b2_7.onnx",
+}
 
 CALIBRATION_FRAMES = 90
+
+# Emotion runs on a sampled frame, not every frame (~31 ms/face single-threaded on CPU);
+# between samples the last smoothed reading is reused. Tuning knob: lower = more responsive.
+EMOTION_INTERVAL_S = 1.0
+
+
+def model_path(name: str) -> str:
+    """Local path to a model file, downloading it first if absent."""
+    path = os.path.join(_MODEL_DIR, name)
+    if not os.path.exists(path):
+        os.makedirs(_MODEL_DIR, exist_ok=True)
+        print(f"Downloading {name}...")
+        # Download to a temp name so an interrupted download never leaves a truncated model behind.
+        urllib.request.urlretrieve(_MODEL_URLS[name], path + ".part")
+        os.replace(path + ".part", path)
+    return path
 
 
 class Pipeline:
     """Full per-frame analysis pipeline."""
 
     def __init__(self):
-        mdir = os.path.abspath(_MODEL_DIR)
-
-        self.face = FaceTracker(os.path.join(mdir, "face_landmarker.task"))
+        self.face = FaceTracker(model_path("face_landmarker.task"))
 
         hand_opts = HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=os.path.join(mdir, "hand_landmarker.task")),
+            base_options=BaseOptions(model_asset_path=model_path("hand_landmarker.task")),
             running_mode=VisionRunningMode.VIDEO,
             num_hands=2,
             min_hand_detection_confidence=0.6,
@@ -56,7 +81,7 @@ class Pipeline:
         self._hand_lm = HandLandmarker.create_from_options(hand_opts)
 
         pose_opts = PoseLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=os.path.join(mdir, "pose_landmarker_lite.task")),
+            base_options=BaseOptions(model_asset_path=model_path("pose_landmarker_lite.task")),
             running_mode=VisionRunningMode.VIDEO,
             num_poses=1,
             min_pose_detection_confidence=0.6,
@@ -66,9 +91,19 @@ class Pipeline:
 
         self.hands = HandTracker(smooth_window=8)
 
+        # Emotion: trained model if it loads, else the blendshape heuristic — a failed download
+        # shouldn't take the whole pipeline down.
+        try:
+            self._emotion_model = EmotionModel(model_path("enet_b2_7.onnx"))
+        except Exception as exc:
+            print(f"Emotion model unavailable, falling back to blendshape heuristic: {exc}")
+            self._emotion_model = None
+        self._last_emotion_t = float("-inf")
+
         # EMA smoothers
         self._ear_smooth = WindowSmooth(maxlen=3)  # smaller window = faster blink response
-        self._emotion_ema = EMA(alpha=0.25)
+        # Model samples arrive ~1/s, so smooth less than the per-frame heuristic did.
+        self._emotion_ema = EMA(alpha=0.5 if self._emotion_model else 0.25)
         self._stress_ema = EMA(alpha=0.2)
         self._head_pose_ema = EMA(alpha=0.3)
         self._gaze_ema = EMA(alpha=0.3)
@@ -137,10 +172,16 @@ class Pipeline:
         # --- Emotions ---
         emotions = {"happy": 0.0, "sad": 0.0, "angry": 0.0,
                     "surprised": 0.0, "fear": 0.0, "disgust": 0.0, "neutral": 1.0}
-        if face_detected and face_res.face_blendshapes:
-            raw_emotions = classify_emotions(face_res.face_blendshapes[0])
-            smoothed = self._emotion_ema.update(raw_emotions)
-            emotions = smoothed if smoothed else raw_emotions
+        if face_detected and self._emotion_model:
+            now = time.monotonic()  # server clock, not the client-supplied ts
+            if now - self._last_emotion_t >= EMOTION_INTERVAL_S:
+                crop = face_crop(rgb, face_res.face_landmarks[0])
+                if crop is not None:
+                    self._emotion_ema.update(self._emotion_model(crop))
+                    self._last_emotion_t = now
+            emotions = self._emotion_ema.value or emotions
+        elif face_detected and face_res.face_blendshapes:
+            emotions = self._emotion_ema.update(classify_emotions(face_res.face_blendshapes[0]))
 
         dom = dominant_emotion(emotions)
 
@@ -225,6 +266,7 @@ class Pipeline:
         self._frame_count = 0
         self.hands.reset()
         self._emotion_ema.reset()
+        self._last_emotion_t = float("-inf")
         self._stress_ema.reset()
         self._head_pose_ema.reset()
         self._gaze_ema.reset()

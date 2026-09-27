@@ -26,6 +26,17 @@ def eye_aspect_ratio(landmarks, eye_indices) -> float:
         return 0.3
 
 
+def face_crop(image, landmarks):
+    """Tight crop of the face from its landmarks, no margin — matches the reference crop the
+    emotion model was validated against (a margin measurably lowered its confidence).
+    Returns None if the face is entirely off-frame."""
+    h, w = image.shape[:2]
+    xs = np.clip([p.x for p in landmarks], 0.0, 1.0) * w
+    ys = np.clip([p.y for p in landmarks], 0.0, 1.0) * h
+    x1, x2, y1, y2 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+    return image[y1:y2, x1:x2] if x2 > x1 and y2 > y1 else None
+
+
 class FaceTracker:
     def __init__(self, model_path: str):
         options = FaceLandmarkerOptions(

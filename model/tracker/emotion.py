@@ -1,8 +1,39 @@
 """
-Rule-based 7-class emotion classifier from MediaPipe blendshapes.
-Weighted contribution per blendshape → normalized emotion scores.
+7-class emotion classification.
+
+EmotionModel is the primary path: a trained model on the face crop. classify_emotions() is
+the rule-based fallback from MediaPipe blendshapes, used only if the model can't be loaded.
 """
 from typing import Dict, List
+
+import cv2
+import numpy as np
+import onnxruntime as ort
+
+# enet_b2_7 output order, mapped to this app's emotion keys.
+_MODEL_LABELS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprised"]
+_MEAN = np.array([0.485, 0.456, 0.406], np.float32)  # ImageNet stats, RGB order
+_STD = np.array([0.229, 0.224, 0.225], np.float32)
+
+
+class EmotionModel:
+    """HSEmotion enet_b2_7 (EfficientNet-B2 trained on AffectNet, Apache-2.0) via onnxruntime.
+
+    Preprocessing mirrors the reference implementation (hsemotion-onnx / EmotiEffLib):
+    RGB face crop -> 260x260 -> /255 -> ImageNet normalize -> CHW.
+    """
+
+    def __init__(self, path: str):
+        self._sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        self._input = self._sess.get_inputs()[0].name
+
+    def __call__(self, face_rgb: np.ndarray) -> Dict[str, float]:
+        x = cv2.resize(face_rgb, (260, 260)).astype(np.float32) / 255.0
+        x = ((x - _MEAN) / _STD).transpose(2, 0, 1)[None]
+        logits = self._sess.run(None, {self._input: x})[0][0]
+        p = np.exp(logits - logits.max())
+        p /= p.sum()
+        return {label: float(v) for label, v in zip(_MODEL_LABELS, p)}
 
 # ARKit blendshape → emotion weights (positive contribution)
 _WEIGHTS: Dict[str, Dict[str, float]] = {
