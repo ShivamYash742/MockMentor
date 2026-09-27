@@ -35,7 +35,7 @@ async function generateUnifiedReport(
 
   try {
     let result;
-    const modelsToTry = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"];
+    const modelsToTry = ["openai/gpt-oss-20b", "openai/gpt-oss-20b"];
     let lastError = null;
 
     for (const modelName of modelsToTry) {

@@ -10,8 +10,8 @@ export const groq = createGroq({
 });
 
 const FALLBACK_MODELS = [
-  'llama-3.1-8b-instant',
-  'llama-3.3-70b-versatile',
+  'openai/gpt-oss-20b',
+  'openai/gpt-oss-20b',
 ] as const;
 
 export interface GenerateOptions {
