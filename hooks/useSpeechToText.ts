@@ -46,12 +46,18 @@ interface SpeechRecognitionErrorEvent {
   message?: string;
 }
 
+export interface SpeechTimingMeta {
+  durationMs: number;
+  pauseBefore: number;
+}
+
 export const useSpeechToText = (options?: {
   lang?: string;
   continuous?: boolean;
   interimResults?: boolean;
-  onSilenceTimeout?: (finalTranscript: string) => void;
+  onSilenceTimeout?: (finalTranscript: string, meta: SpeechTimingMeta) => void;
   silenceTimeoutMs?: number;
+  totalSilenceTimeoutMs?: number;
 }) => {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
@@ -61,6 +67,16 @@ export const useSpeechToText = (options?: {
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Separate from silenceTimeoutRef above: that one fires after the user has said SOMETHING
+  // and paused. This one fires when nothing was heard at all since listening started — the
+  // "you've gone completely silent" case, which onresult's timer can never catch because
+  // onresult never runs if there's no speech to recognize.
+  const totalSilenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hasHeardSpeechRef = useRef(false);
+  // Real timing for the current listening turn, used to report durationMs/pauseBefore instead
+  // of the fixed placeholders the app used to save with every message.
+  const listenStartRef = useRef(0);
+  const speechStartRef = useRef<number | null>(null);
   const transcriptRef = useRef(""); // Keep track in a ref for the timeout closure
   const isIntentionallyStopped = useRef(false);
 
@@ -68,6 +84,7 @@ export const useSpeechToText = (options?: {
   const continuous = options?.continuous ?? true;
   const interimResults = options?.interimResults ?? true;
   const silenceTimeoutMs = options?.silenceTimeoutMs || 3000;
+  const totalSilenceTimeoutMs = options?.totalSilenceTimeoutMs || 10000;
   
   // Store the callback in a ref so it doesn't cause re-initialization
   const onSilenceTimeoutRef = useRef(options?.onSilenceTimeout);
@@ -99,9 +116,33 @@ export const useSpeechToText = (options?: {
     recognition.onstart = () => {
       setIsListening(true);
       setError(null);
+
+      // Arm the "total silence" watchdog for this listening turn, and start the clock for
+      // real pauseBefore/durationMs timing.
+      hasHeardSpeechRef.current = false;
+      listenStartRef.current = Date.now();
+      speechStartRef.current = null;
+      if (totalSilenceTimerRef.current) clearTimeout(totalSilenceTimerRef.current);
+      if (onSilenceTimeoutRef.current) {
+        totalSilenceTimerRef.current = setTimeout(() => {
+          if (!hasHeardSpeechRef.current && onSilenceTimeoutRef.current) {
+            onSilenceTimeoutRef.current("", { durationMs: 0, pauseBefore: totalSilenceTimeoutMs });
+          }
+        }, totalSilenceTimeoutMs);
+      }
     };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
+      // Any result — interim or final — means the user isn't silent; disarm the watchdog above.
+      if (!hasHeardSpeechRef.current) {
+        hasHeardSpeechRef.current = true;
+        speechStartRef.current = Date.now();
+      }
+      if (totalSilenceTimerRef.current) {
+        clearTimeout(totalSilenceTimerRef.current);
+        totalSilenceTimerRef.current = null;
+      }
+
       let currentInterim = "";
       let currentFinal = "";
 
@@ -130,7 +171,12 @@ export const useSpeechToText = (options?: {
         silenceTimeoutRef.current = setTimeout(() => {
           const combinedReady = transcriptRef.current + (transcriptRef.current && currentFinal.trim() ? " " : "") + currentFinal.trim();
           if (combinedReady.trim().length > 0 && onSilenceTimeoutRef.current) {
-            onSilenceTimeoutRef.current(combinedReady.trim());
+            const pauseBefore = speechStartRef.current !== null ? speechStartRef.current - listenStartRef.current : 0;
+            // Speaking duration excludes the trailing silenceTimeoutMs spent confirming they'd finished.
+            const durationMs = speechStartRef.current !== null
+              ? Math.max(0, (Date.now() - silenceTimeoutMs) - speechStartRef.current)
+              : 0;
+            onSilenceTimeoutRef.current(combinedReady.trim(), { durationMs, pauseBefore });
           }
         }, silenceTimeoutMs);
       }
@@ -195,8 +241,11 @@ export const useSpeechToText = (options?: {
       if (silenceTimeoutRef.current) {
         clearTimeout(silenceTimeoutRef.current);
       }
+      if (totalSilenceTimerRef.current) {
+        clearTimeout(totalSilenceTimerRef.current);
+      }
     };
-  }, [lang, continuous, interimResults, silenceTimeoutMs]); // Removed onSilenceTimeout from deps
+  }, [lang, continuous, interimResults, silenceTimeoutMs, totalSilenceTimeoutMs]); // Removed onSilenceTimeout from deps
 
   const startListening = useCallback(() => {
     if (!isSupported) {
@@ -258,10 +307,13 @@ export const useSpeechToText = (options?: {
 
   const stopListening = useCallback(() => {
     if (!isSupported) return;
-    
-    
+
+
     if (silenceTimeoutRef.current) {
       clearTimeout(silenceTimeoutRef.current);
+    }
+    if (totalSilenceTimerRef.current) {
+      clearTimeout(totalSilenceTimerRef.current);
     }
     isIntentionallyStopped.current = true;
     

@@ -97,8 +97,9 @@ export function getReportGenerationPrompt(params: {
   speakingTime: number;
   wordsPerMinute: number;
   fillerWordsCount: number;
-  confidenceScore: number;
+  fluencyScore: number; // filler-word-density-derived fluency proxy — not measured confidence
   conversationText: string;
+  bodyLanguageSection: string; // real numbers, or an instruction to omit bodyLanguage entirely
 }): string {
   return formatPrompt(prompts.reportGeneration.mainPrompt, {
     schemaInstruction: prompts.reportGeneration.schemaInstruction,

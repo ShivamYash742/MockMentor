@@ -12,6 +12,7 @@ import {
   CheckCircle,
   Loader2,
   User,
+  AlertCircle,
 } from 'lucide-react';
 
 import Navbar from '@/components/navbar';
@@ -29,6 +30,7 @@ export default function NewInterviewPage() {
   const [loading, setLoading] = useState(false);
   const [fetchLoading, setFetchLoading] = useState(true);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Step 1: Resume Upload
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -91,6 +93,7 @@ export default function NewInterviewPage() {
   const processResumeText = async () => {
     if (!resumeText.trim()) return false;
 
+    setErrorMessage(null);
     setLoading(true);
 
     try {
@@ -120,12 +123,12 @@ export default function NewInterviewPage() {
         setUserProfile(data.userProfile);
         return true;
       } else {
-        alert('Failed to process resume: ' + (data.details || data.error));
+        setErrorMessage('Failed to process resume: ' + (data.details || data.error));
         return false;
       }
     } catch (error) {
       console.error('Error processing resume text:', error);
-      alert('Failed to process resume text');
+      setErrorMessage('Failed to process resume text');
       return false;
     } finally {
       setLoading(false);
@@ -135,6 +138,7 @@ export default function NewInterviewPage() {
   const uploadResume = async () => {
     if (!selectedFile) return false;
 
+    setErrorMessage(null);
     setLoading(true);
 
     try {
@@ -169,13 +173,13 @@ export default function NewInterviewPage() {
         setUserProfile(data.userProfile);
         return true;
       } else {
-        alert('Failed to process resume: ' + (data.details || data.error));
+        setErrorMessage('Failed to process resume: ' + (data.details || data.error));
         return false;
       }
     } catch (error) {
       console.error('Error uploading resume:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to upload resume';
-      alert(errorMessage);
+      const message = error instanceof Error ? error.message : 'Failed to upload resume';
+      setErrorMessage(message);
       return false;
     } finally {
       setLoading(false);
@@ -183,8 +187,9 @@ export default function NewInterviewPage() {
   };
 
   const processJobDetails = async () => {
+    setErrorMessage(null);
     if (!jobTitle) {
-      alert('Please enter a job title');
+      setErrorMessage('Please enter a job title');
       return false;
     }
 
@@ -209,12 +214,12 @@ export default function NewInterviewPage() {
         setJobSummary(data.jobSummary);
         return true;
       } else {
-        alert('Failed to process job details: ' + data.error);
+        setErrorMessage('Failed to process job details: ' + data.error);
         return false;
       }
     } catch (error) {
       console.error('Error processing job details:', error);
-      alert('Failed to process job details');
+      setErrorMessage('Failed to process job details');
       return false;
     } finally {
       setLoading(false);
@@ -222,13 +227,14 @@ export default function NewInterviewPage() {
   };
 
   const createInterview = async () => {
+    setErrorMessage(null);
     if (!jobTitle || !jobSummary || !resumeSummary) {
-      alert('Please complete all steps before starting the interview');
+      setErrorMessage('Please complete all steps before starting the interview');
       return;
     }
 
     if (!selectedMentor) {
-      alert('Please select a mentor to continue');
+      setErrorMessage('Please select a mentor to continue');
       return;
     }
 
@@ -256,16 +262,17 @@ export default function NewInterviewPage() {
         // Redirect to interview page
         router.push(`/interview/${data?.interview?._id}`);
       } else {
-        alert('Failed to create interview: ' + data.error);
+        setErrorMessage('Failed to create interview: ' + data.error);
       }
     } catch (error) {
       console.error('Error creating interview:', error);
-      alert('Failed to create interview');
+      setErrorMessage('Failed to create interview');
       setLoading(false);
     }
   };
 
   const handleNextStep = async () => {
+    setErrorMessage(null);
     if (currentStep === 1) {
       // Step 1: Resume processing
       if (useExistingResume && resumeSummary) {
@@ -281,7 +288,7 @@ export default function NewInterviewPage() {
           setCurrentStep(2);
         }
       } else {
-        alert('Please upload a resume, paste resume text, or use your existing one');
+        setErrorMessage('Please upload a resume, paste resume text, or use your existing one');
       }
     } else if (currentStep === 2) {
       // Step 2: Job processing
@@ -379,6 +386,12 @@ export default function NewInterviewPage() {
 
         {/* Step Content */}
         <Card className="p-6">
+          {errorMessage && (
+            <div className="mb-6 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
           {currentStep === 1 && (
             <div className="space-y-6">
               <div className="text-center">

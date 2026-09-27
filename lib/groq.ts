@@ -9,6 +9,7 @@ export const groq = createGroq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
+// Bigger model first: better quality, with the smaller one as a fallback if it's unavailable.
 const FALLBACK_MODELS = [
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
@@ -17,6 +18,10 @@ const FALLBACK_MODELS = [
 export interface GenerateOptions {
   temperature?: number;
   timeoutMs?: number;
+  // Override the default model order — e.g. a caller that only wants the faster model.
+  models?: readonly string[];
+  // For structured output: pass Output.object({ schema }) from 'ai'. Populates result.output.
+  output?: Parameters<typeof generateText>[0]['output'];
 }
 
 export async function generateWithGroq(
@@ -24,13 +29,14 @@ export async function generateWithGroq(
   opts?: GenerateOptions
 ) {
   let lastError: unknown = null;
+  const models = opts?.models ?? FALLBACK_MODELS;
 
-  for (const modelName of FALLBACK_MODELS) {
+  for (const modelName of models) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 8000);
+
     try {
       console.log(`[groq] Trying ${modelName}...`);
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 8000);
 
       const result = await generateText({
         model: groq(modelName),
@@ -38,9 +44,9 @@ export async function generateWithGroq(
         temperature: opts?.temperature ?? 0.7,
         maxRetries: 0,
         abortSignal: controller.signal,
+        ...(opts?.output ? { output: opts.output } : {}),
       });
 
-      clearTimeout(timeout);
       console.log(`[groq] Success: ${modelName}`);
       return result;
 
@@ -58,6 +64,8 @@ export async function generateWithGroq(
       if (error.name === 'AbortError') continue;
 
       throw e;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

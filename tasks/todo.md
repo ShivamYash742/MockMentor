@@ -1,6 +1,6 @@
 # MockMentor — Scan Findings & 5-Step Plan
 
-> **Status: Steps 1–3 done ✅. Waiting for your go-ahead before Step 4.**
+> **Status: Steps 1–5 done ✅. This completes the original 5-step plan.**
 > One step at a time: I tick the boxes as I go and check in with you after each step.
 
 ---
@@ -181,17 +181,17 @@ Order: working flow → secure API → correct live experience → honest scores
   - the Step 2 flow still passes.
 
 ### Step 4 — Fix the live interview experience
-- [ ] Typed answers work: add `sendText()` to `useVoiceInterview`, reusing `handleUserSpeech`. Enter and Send submit the answer instead of calling `stop()`. This also gives Firefox users a way to answer.
-- [ ] The mic button really mutes: reuse the unused `isMuted` field, and the mic isn't restarted while muted.
-- [ ] The silence nudge fires: a ~10 s no-speech timer triggers `[USER_PAUSED]`. Fix the prompt wording to match.
-- [ ] Replace the spoken gaze alert with an on-screen banner, so the transcript isn't polluted.
-- [ ] Face tracker:
+- [x] Typed answers work: add `sendText()` to `useVoiceInterview`, reusing `handleUserSpeech`. Enter and Send submit the answer instead of calling `stop()`. This also gives Firefox users a way to answer.
+- [x] The mic button really mutes: reuse the unused `isMuted` field, and the mic isn't restarted while muted.
+- [x] The silence nudge fires: a ~10 s no-speech timer triggers `[USER_PAUSED]`. Fix the prompt wording to match.
+- [x] Replace the spoken gaze alert with an on-screen banner, so the transcript isn't polluted.
+- [x] Face tracker:
   - try the GPU, then fall back to the CPU;
   - drop the local model path that returns 404;
   - raise the frame rate from 5 to 10 fps;
   - keep calibration between questions.
-- [ ] Camera permission errors show a message.
-- [ ] Replace the `alert()`s on the setup page with an inline error.
+- [x] Camera permission errors show a message.
+- [x] Replace the `alert()`s on the setup page with an inline error.
 - [ ] Only if profiling shows it's needed: move the camera panel into its own component, to stop re-renders at 5–10 Hz.
 - **Verify** (Chrome and Firefox):
   - typed answers get AI replies;
@@ -201,19 +201,19 @@ Order: working flow → secure API → correct live experience → honest scores
   - denying the camera shows a message.
 
 ### Step 5 — Make the scores honest
-- [ ] `useSpeechToText` returns real `durationMs` for each answer. Each message stores `durationMs` and `pauseBefore`.
-- [ ] Add a pure `lib/speechMetrics.ts` → `computeSpeechMetrics()` (speaking time, words per minute, response time, fillers including "you know"). Then delete all the fake metrics in `interview.tsx`.
-- [ ] Report prompt:
+- [x] `useSpeechToText` returns real `durationMs` for each answer. Each message stores `durationMs` and `pauseBefore`.
+- [x] Add a pure `lib/speechMetrics.ts` → `computeSpeechMetrics()` (speaking time, words per minute, response time, fillers including "you know"). Then delete all the fake metrics in `interview.tsx`.
+- [x] Report prompt:
   - add real body-language numbers from the face summary;
   - rename "Confidence Index" to "fluency";
   - with no camera data, `bodyLanguage` is omitted and the UI shows "Not assessed".
-- [ ] Structured output with a zod schema in `lib/reportSchema.ts`, using `Output.object` from the installed `ai` v6. `zod` is already in the dependency tree, so it just becomes a direct dependency. This removes the regex JSON parsing.
-- [ ] Reuse `generateWithGroq`:
+- [x] Structured output with a zod schema in `lib/reportSchema.ts`, using `Output.object` from the installed `ai` v6. `zod` is already in the dependency tree, so it just becomes a direct dependency. This removes the regex JSON parsing.
+- [x] Reuse `generateWithGroq`:
   - add `models` and `output` options;
   - move `clearTimeout` into `finally`;
   - the report tries 70b first;
   - delete the duplicate model loop.
-- [ ] Delete the ~150-line fallback report. If the AI fails, return 503 and save nothing; the existing retry UI handles it.
+- [x] Delete the ~150-line fallback report. If the AI fails, return 503 and save nothing; the existing retry UI handles it.
 - **Verify:**
   - `node --test` passes for `computeSpeechMetrics` and for a sample report against the schema;
   - end-to-end with the camera on and off, the prompt contains real numbers;
@@ -375,3 +375,72 @@ Order: working flow → secure API → correct live experience → honest scores
 **Open, not touched (by design, not oversight)**
 - Any guest id that exists is still accepted as-is — there's no proof of ownership beyond "this id was issued by us." Guests were never meant to have a password; adding one wasn't part of the plan and would be a bigger, separate feature.
 - `README.md` also went into this commit — it's your own edit (the `.env.local` → `.env` rename, matching the `.gitignore`/`.env.example` change from Step 2), read and confirmed harmless before including it.
+
+### Step 4 — done (2026-09-27)
+**What changed**
+- **Typed answers work.** `useVoiceInterview` now exposes `sendText()`, which runs a typed message through the exact same pipeline as recognized speech (`handleUserSpeech`). Enter and the Send button call it; the Send button is enabled once there's text and the session is connected. Enter used to call `stop()` — ending the whole interview and clearing the transcript instead of sending the answer.
+- **The mic button really mutes.** It's wired to the (previously unused) `isMuted` field in `VoiceInterviewContext`, through a new `setMuted()` in `useVoiceInterview`. Muting stops listening immediately; every place that restarts listening (after the AI finishes speaking, on pause/resume, on the total-silence nudge) now checks `isMuted` first, so it stays off until unmuted.
+- **The silence nudge can fire now.** The real bug: `useSpeechToText`'s only silence timer lived inside `onresult`, so it required a recognized word before it could ever start — total silence (nothing recognized at all) never scheduled anything. Added a second, independent ~10s watchdog armed in `recognition.onstart` and disarmed by the first `onresult`, so it actually catches "the candidate hasn't said anything." Updated `userPausedGuideline` in `lib/prompts.json` from "5 seconds" to "10 seconds" to match.
+- **The gaze alert is now a banner, not speech.** `SpeechSynthesisUtterance('Please look at the camera.')` was audible through the room/speakers and the mic would pick it up and record it as if the candidate had said it. It's now a 4-second on-screen banner (stacked with the existing STT-error banner) with the same 3s-off/10s-cooldown trigger logic, otherwise unchanged.
+- **Face tracker:**
+  - dropped the local-model path (`/models/face_landmarker.task`) — that file was never in `public/`, so it 404'd on every single session and the CDN fallback ran every time anyway;
+  - added a GPU→CPU delegate fallback (it only ever tried GPU before);
+  - frame rate 5fps → 10fps for finer-grained blink detection;
+  - `resetSession()` (called between questions) no longer resets the calibration baseline — it now only clears per-question aggregation state. Calibration was being wiped and silently re-run mid-question against whatever expression the candidate happened to have at that moment, instead of running once against a neutral baseline at the start of the interview.
+- **Found while raising the frame rate:** the frame-log buffer trimmed itself once it passed 1000 frames. At 10fps a normal 3-minute interview produces 1800 frames — comfortably over that cap — so simply doubling the frame rate would have started silently discarding the first part of every session's face data before the report could use it. Raised the cap to 2200 (trims to 1200), which comfortably covers a full session with headroom.
+- **Camera permission errors show a message.** A denied/failed `getUserMedia()` used to just `console.log` and leave the camera panel blank. It now sets an inline banner (distinguishing "access denied" from other failures) and turns the camera toggle off so the UI matches reality.
+- **The setup page's 12 `alert()` calls are gone.** Replaced with one `errorMessage` state shown as an inline banner above the current step, cleared at the start of each action so a stale error doesn't linger after a later success.
+- **Skipped, per the plan:** moving the camera panel into its own component to cut re-renders. No profiling was done and nothing indicated it's a real problem — doing it anyway would be speculative. Left unchecked in the plan above; flag it again if you notice the panel lagging in practice.
+
+**A mistake caught before finishing:** the `alert()` → inline-error edit was done with a Python script for speed, and the script's default file write silently converted the file from CRLF to LF line endings (the rest of the codebase uses LF; this one file happened to already be CRLF). That turned the diff into a ~1350-line rewrite of a file where only ~15 lines had actually changed. I caught it by checking `git diff --stat` before wrapping up, converted the file back to CRLF, and confirmed the diff was down to just the intended lines. Lesson for myself: check line endings before trusting a scripted edit's diff size.
+
+**Proof**
+- `lint`, `typecheck`, `test` (still 6/6 — this step didn't touch anything the existing tests cover) and `build` all pass.
+- Read through every changed file in full after editing, tracing each callback path (`onstart`/`onresult`/`onend` in the STT hook, every `startListening()`/`stopListening()` call site in `useVoiceInterview`, the face-tracker's init/reset/frame-cap interaction) rather than changing lines in isolation — the frame-buffer-cap interaction above is what that caught.
+
+**Not verified: this step is almost entirely browser APIs**
+- Speech recognition, text-to-speech, `getUserMedia`, and MediaPipe face tracking don't run in Node, and — same as Steps 2 and 3 — Clerk's dev handshake rejects the placeholder keys in this environment, so the interview page itself can't be opened at all here to click through it.
+- Everything in this step was verified by reading the code and tracing every call path by hand, not by running it in a browser. Before you rely on this, please do a manual pass in a real browser with real keys:
+  - type an answer and press Enter, and separately click Send — both should get a spoken AI reply and appear in the transcript;
+  - click the mic button while it's listening — it should stop immediately and stay off; unmute and it should resume;
+  - go quiet right after the AI asks a question and wait ~10s — it should check in on you;
+  - look away from the camera for a few seconds — a banner should appear, and nothing should land in the transcript;
+  - deny the camera permission prompt — a message should appear instead of a blank panel;
+  - in `/interview/new`, trigger a few of the old alert cases (empty job title, no resume, a `.docx` upload) and confirm each shows as an inline banner instead of a browser alert.
+
+**Open, not touched (per the plan)**
+- The camera-panel-into-its-own-component perf change — explicitly deferred above.
+- Nothing committed.
+
+### Step 5 — done (2026-09-27)
+**What changed**
+- **Real per-answer timing.** `useSpeechToText` now tracks two independent clocks: `listenStartRef` (when listening began) and `speechStartRef` (when the first word was recognized). Every completed answer now reports real `durationMs` (how long they spoke, excluding the trailing pause used to detect they'd finished) and `pauseBefore` (how long they took to start). These flow through `Message` (`VoiceInterviewContext`) → `handleUserSpeech`/`sendText` → `saveMessageToSession`, replacing the old `duration: 3000, confidence: 0.9, emotion: 'neutral'` sent with every single message regardless of what actually happened. Typed answers and the AI's own messages have no timing signal, so they're saved without these fields — not backfilled with a guess.
+- **`lib/speechMetrics.ts`** replaces every fake number that used to live in `interview.tsx`:
+  - `userSpeakingTime` / `interviewerSpeakingTime` are now a real sum of `durationMs`, not `totalDuration / 2` every single time;
+  - `totalPauses`, `averagePauseLength`, `longestPause` are real, not permanently zero (the old `conversationMetrics` state had no setter — it could never change from its initial all-zero value);
+  - `countFillerWords` matches multi-word phrases like "you know" with a whole-word regex; the old version split text into single words first, so "you know" could never match anything;
+  - `emotionalTone` (`{positive: 0.6, neutral: 0.3, ...}`, identical for every candidate, every time, unconnected to anything they said) is gone. It's never referenced by the report prompt or shown anywhere in the UI, so I stopped fabricating it — Mongoose's own zero defaults now represent "not measured" instead of specific-looking fake numbers.
+  - `interruptionCount` stays hardcoded at `0` — that one's honest: there's no interruption-detection signal to fake it from.
+- **Real body-language numbers.** `generate-report` now passes the sanitized face-tracking summary (stress, engagement, on-screen attention, blink rate) into the report prompt as `{bodyLanguageSection}`. When there's no camera data, the prompt explicitly instructs the model not to invent one and to omit the `bodyLanguage` key — the schema, the Mongoose model, and the report UI's `ReportData` type all now treat `bodyLanguage` as optional. The report page didn't render it at all before (it was computed and stored, never shown); it now gets a card in the Competency Breakdown grid when present, and a dashed "Not assessed" card when it's missing.
+- **"Confidence Index" renamed in the prompt only.** The raw filler-word-density number fed to the LLM is now labeled "Speech Fluency Index" with a one-line note on what it actually measures. `performanceAnalysis.confidence` — the LLM's own holistic judgment, a separate thing — is untouched.
+- **Structured output.** `lib/reportSchema.ts` is a zod schema matching the report shape (with `bodyLanguage` optional). `generate-report` calls `generateWithGroq` with `output: Output.object({ schema: reportSchema })` (`ai` v6), so the model's response is validated and typed directly — no more stripping ```json fences and hoping `JSON.parse` doesn't throw, and no more silent acceptance of a malformed `specificFeedback` item (zod now rejects it outright). `zod` moved from a transitive dependency to a direct one in `package.json` (ran `npm install`, `package-lock.json`'s diff is 2 lines).
+- **`generateWithGroq`** now takes optional `models` (override the try-order) and `output` (structured-output spec) options, and `clearTimeout` moved into a `finally` so it always runs, not only on the success path. The default model order (`gpt-oss-120b` then `gpt-oss-20b` — renamed from the Llama models by your own commits between Step 3 and this one) already tries the bigger model first, so `generate-report` uses the default rather than passing its own override.
+- **The ~150-line fallback report is gone.** `generate-report`'s own duplicate model-loop, the regex JSON parsing, and the entire heuristic-scoring fallback block are deleted. If Groq fails, the route returns `503` and saves nothing — `interview-complete.tsx` already had a proper error/retry UI (`MAX_RETRIES = 3`, a Retry button) built for exactly this, wired to "the response wasn't `success: true`," so it needed no changes at all.
+
+**A safety check before running anything:** this project has a real `.env` (real MongoDB Atlas URI, real Groq/Clerk/Appwrite keys) that Steps 2–5's `next build`/`next start` test runs all ran alongside. Before trusting that, I verified `@next/env`'s actual loading code: it snapshots `process.env` once, before reading any `.env` file, and only ever fills in a key from the file if that key wasn't already set in that snapshot. Since my scratchpad's placeholder values were exported in the shell *before* every build/start in every step, they were already in `process.env` when Next started, so the real `.env`'s values were never read for `MONGODB_URI`, `GROQ_API_KEY`, or any of the Clerk/Appwrite keys — confirmed by checking every key name in both files matches. No real service was ever touched by this session's testing.
+
+**Proof**
+- `lint`, `typecheck`, `test` (21 passing — 6 from Step 3, 5 for `computeSpeechMetrics`/`countFillerWords`, 4 for `reportSchema` against sample reports with and without `bodyLanguage`, plus the earlier 6) and `build` all pass.
+- Ran the full guest flow again against a fresh throwaway `mongo:7` container with placeholder keys:
+  - `generate-report` with the placeholder `GROQ_API_KEY` now returns `503` with no `success` field, and Mongo has **zero** documents in `interviewreports` afterward — confirmed both with face data supplied and without, so neither branch of the new body-language prompt logic crashes;
+  - `add_message` with real `duration`/`pauseBefore` values persists exactly those fields; a message with no timing data at all saves cleanly with neither field present — no fabricated `confidence`/`emotion` fallback;
+  - `end` with a full `computeSpeechMetrics()`-shaped payload round-trips through the existing Step 3 sanitizer unchanged, and `emotionalTone` correctly comes back as the schema's all-zero default since the client no longer sends it;
+  - the server log confirms the 503s came from the real (expected) "Invalid API Key" error, not from a bug in the new prompt-building code;
+  - re-ran the full Step 2/3 guest-flow suite (2 assertions updated to match intentional behavior changes: unknown-guest 401 instead of 404 from Step 3, and generate-report's honest 503 instead of the old fabricated 200 from this step) — everything else passed unchanged.
+
+**Not verified: needs a real Groq key and a real browser**
+- I cannot see actual AI-generated report content, or confirm the model reliably honors the "omit bodyLanguage" instruction, without a working `GROQ_API_KEY`. The prompt and schema are correct by inspection and the schema's zod validation will reject anything that doesn't conform (unlike the old regex parsing, which accepted whatever came back).
+- The `useSpeechToText` timing changes are browser-only, same limitation as Step 4. I traced every path by hand (armed in `onstart`, marked in the first `onresult`, read at the pause-timeout that fires with real content) but couldn't click through it here.
+- Please do one real run before trusting this fully: complete an interview with the camera on, generate a report, and check that the numbers in it look like they came from what you actually said — not the same numbers every time.
+
+This closes out the original 5-step plan. Nothing has been committed — see the note below.

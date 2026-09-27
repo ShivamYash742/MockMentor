@@ -40,6 +40,7 @@ import { StressHUD } from '@/components/interview/StressHUD';
 import type { FaceSummary } from '@/lib/mlSidecar';
 import { appConfig } from '@/lib/appConfig';
 import { guestHeaders } from '@/lib/utils';
+import { computeSpeechMetrics } from '@/lib/speechMetrics';
 
 const Interview = ({
   interviewId,
@@ -50,11 +51,10 @@ const Interview = ({
   role: string;
   mentorId: string;
 }) => {
-  const { sessionState, start, stop, speakMessage, interimTranscript, sttError, isListening, togglePause } = useVoiceInterview();
+  const { sessionState, start, stop, speakMessage, sendText, interimTranscript, sttError, isListening, togglePause, isMuted, setMuted } = useVoiceInterview();
   const { isUserTalking, isAvatarTalking, messages: contextMessages } = useVoiceInterviewContext();
 
   const [isCameraOn, setIsCameraOn] = useState(true);
-  const [isMicOn, setIsMicOn] = useState(true);
   const [loading, setLoading] = useState(true);
   const [exitLoading, setExitLoading] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -62,15 +62,8 @@ const Interview = ({
   const [isInterviewComplete, setIsInterviewComplete] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
-
-  const [conversationMetrics] = useState({
-    totalPauses: 0,
-    totalPauseTime: 0,
-    longestPause: 0,
-    userSpeakingTime: 0,
-    fillerWordsCount: 0,
-    wordsSpoken: 0,
-  });
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [gazeAlertVisible, setGazeAlertVisible] = useState(false);
 
   // Timer state: startTime comes from the server session, so a refresh keeps the clock.
   const [startTime, setStartTime] = useState<Date | null>(null);
@@ -91,7 +84,9 @@ const Interview = ({
     isCameraOn,
   );
 
-  // 3.5 — Attention alert: if gaze leaves screen for 3s, speak reminder (10s cooldown)
+  // 3.5 — Attention alert: if gaze leaves screen for 3s, show an on-screen banner (10s cooldown).
+  // Not spoken: speechSynthesis audio was being picked up by the mic and recorded as if the
+  // candidate had said it.
   useEffect(() => {
     if (!isSidecarAvailable || !lastFrame?.face_detected) return;
     const now = Date.now();
@@ -103,12 +98,8 @@ const Interview = ({
       ) {
         alertCooldownRef.current = now;
         gazeOffTimeRef.current = null;
-        if (typeof window !== 'undefined' && window.speechSynthesis) {
-          const utt = new SpeechSynthesisUtterance('Please look at the camera.');
-          utt.volume = 0.8;
-          utt.rate = 1.1;
-          window.speechSynthesis.speak(utt);
-        }
+        setGazeAlertVisible(true);
+        setTimeout(() => setGazeAlertVisible(false), 4000);
       }
     } else {
       gazeOffTimeRef.current = null;
@@ -173,32 +164,15 @@ const Interview = ({
           sender: m.sender === 'CLIENT' ? 'user' : 'interviewer',
           text: m.content,
           timestamp: new Date(),
-          duration: 3000, // placeholder metrics
-          confidence: 0.9,
-          emotion: 'neutral',
+          // Real speech timing when we have it (recognized speech only — typed answers and
+          // avatar messages have none, and we don't fabricate a stand-in for either).
+          ...(m.durationMs !== undefined ? { duration: m.durationMs } : {}),
+          ...(m.pauseBefore !== undefined ? { pauseBefore: m.pauseBefore } : {}),
         });
       });
       savedMessagesCount.current = contextMessages.length;
     }
   }, [contextMessages, saveMessageToSession]);
-
-  const analyzeFillerWords = (text: string): number => {
-    const fillerWords = ['um', 'uh', 'like', 'you know', 'actually', 'basically', 'literally'];
-    let count = 0;
-    const words = text.toLowerCase().split(/\s+/);
-    words.forEach(word => {
-      if (fillerWords.includes(word.replace(/[^a-z]/g, ''))) {
-        count++;
-      }
-    });
-    return count;
-  };
-
-  const calculateWPM = (text: string, durationMs: number): number => {
-    const words = text.split(/\s+/).length;
-    const minutes = durationMs / 60000;
-    return minutes > 0 ? Math.round(words / minutes) : 0;
-  };
 
   // Auto-scroll chat
   useEffect(() => {
@@ -214,8 +188,17 @@ const Interview = ({
         .getUserMedia({ video: true, audio: false })
         .then((stream) => {
           if (videoRef.current) videoRef.current.srcObject = stream;
+          setCameraError(null);
         })
-        .catch((err) => console.log('Error accessing media devices:', err));
+        .catch((err) => {
+          console.error('Error accessing media devices:', err);
+          setCameraError(
+            err?.name === 'NotAllowedError'
+              ? 'Camera access denied. Please enable it in your browser settings.'
+              : 'Could not access the camera. You can continue with it off.'
+          );
+          setIsCameraOn(false);
+        });
     } else if (!isCameraOn && videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       const tracks = stream.getTracks();
@@ -309,6 +292,14 @@ const Interview = ({
     return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Typed answers reuse the same pipeline as recognized speech — also the only way to
+  // answer in a browser without SpeechRecognition support (e.g. Firefox).
+  const handleSendText = () => {
+    if (!message.trim() || sessionState !== VoiceSessionState.CONNECTED) return;
+    sendText(message);
+    setMessage('');
+  };
+
   const exitInterview = async () => {
     if (exitingRef.current) return; // timer and End button can both fire
     exitingRef.current = true;
@@ -323,28 +314,14 @@ const Interview = ({
         : null;
 
     const totalDuration = startTime ? Date.now() - startTime.getTime() : 0;
-    const averagePauseLength = conversationMetrics.totalPauses > 0 
-      ? conversationMetrics.totalPauseTime / conversationMetrics.totalPauses : 0;
-      
-    // Synthesize string of all user text
-    const allUserText = contextMessages.filter(m => m.sender === 'CLIENT').map(m => m.content).join(' ');
-    const fillerWordsCount = analyzeFillerWords(allUserText);
-    const wordsSpoken = allUserText.split(/\s+/).length;
-    const wordsPerMinute = calculateWPM(allUserText, conversationMetrics.userSpeakingTime || totalDuration/2);
-    
+
+    // Real metrics from each answer's actual speech timing — no fixed 50/50 split, no
+    // hardcoded emotionalTone, and "you know" now actually counts as a filler phrase.
+    const userMessages = contextMessages.filter(m => m.sender === 'CLIENT');
     const finalMetrics = {
       totalDuration,
-      userSpeakingTime: conversationMetrics.userSpeakingTime || totalDuration/2,
-      interviewerSpeakingTime: totalDuration - (conversationMetrics.userSpeakingTime || totalDuration/2),
-      totalPauses: conversationMetrics.totalPauses,
-      averagePauseLength,
-      longestPause: conversationMetrics.longestPause,
-      averageResponseTime: averagePauseLength,
-      wordsPerMinute,
-      interruptionCount: 0,
-      fillerWordsCount,
-      confidenceScore: Math.max(0.3, 1 - (fillerWordsCount / Math.max(1, wordsSpoken))),
-      emotionalTone: { positive: 0.6, neutral: 0.3, negative: 0.1, confident: 0.7, nervous: 0.3 },
+      ...computeSpeechMetrics(userMessages, totalDuration),
+      interruptionCount: 0, // not tracked — no interruption-detection signal exists
     };
 
     if (sessionId) {
@@ -453,12 +430,26 @@ const Interview = ({
                 </span>
               </div>
               
-              {sttError && (
-                 <div className="absolute top-16 left-4 right-4 z-20 bg-destructive text-destructive-foreground px-4 py-2 rounded shadow-md font-medium text-sm text-center">
-                    {sttError}
-                 </div>
+              {(sttError || cameraError || gazeAlertVisible) && (
+                <div className="absolute top-16 left-4 right-4 z-20 flex flex-col gap-2">
+                  {sttError && (
+                    <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded shadow-md font-medium text-sm text-center">
+                      {sttError}
+                    </div>
+                  )}
+                  {cameraError && (
+                    <div className="bg-destructive text-destructive-foreground px-4 py-2 rounded shadow-md font-medium text-sm text-center">
+                      {cameraError}
+                    </div>
+                  )}
+                  {gazeAlertVisible && (
+                    <div className="bg-amber-500 text-white px-4 py-2 rounded shadow-md font-medium text-sm text-center">
+                      Please look at the camera
+                    </div>
+                  )}
+                </div>
               )}
-              
+
               {isCameraOn ? (
                 <video playsInline ref={videoRef} autoPlay muted className="w-full h-full object-cover">
                   <track kind="captions" />
@@ -539,19 +530,19 @@ const Interview = ({
                     placeholder="Speak into microphone or type..."
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
-                    onKeyPress={(e) => {
+                    onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
-                        if (message.trim()) {
-                          stop(); // Actually we should just call handleUserSpeech from context, but we don't expose it directly.
-                          // As a workaround, we could fetch here or expose it. Since it's voice first, typing is secondary.
-                          setMessage('');
-                        }
+                        handleSendText();
                       }
                     }}
                     className="flex-1"
                   />
-                  <Button disabled size="sm">
+                  <Button
+                    size="sm"
+                    onClick={handleSendText}
+                    disabled={!message.trim() || sessionState !== VoiceSessionState.CONNECTED}
+                  >
                     <Send className="w-4 h-4" />
                   </Button>
                 </div>
@@ -572,12 +563,12 @@ const Interview = ({
           {isCameraOn ? <Camera className="w-6 h-6" /> : <CameraOff className="w-6 h-6" />}
         </Button>
         <Button
-          variant={isMicOn ? 'outline' : 'secondary'}
+          variant={!isMuted ? 'outline' : 'secondary'}
           size="lg"
-          onClick={() => setIsMicOn(!isMicOn)}
-          className={`rounded-full shadow-sm w-14 h-14 ${isMicOn ? 'border-green-500 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950' : 'text-muted-foreground'}`}
+          onClick={() => setMuted(!isMuted)}
+          className={`rounded-full shadow-sm w-14 h-14 ${!isMuted ? 'border-green-500 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950' : 'text-muted-foreground'}`}
         >
-          {isMicOn ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
+          {!isMuted ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
         </Button>
         <Button
           variant={isChatOpen ? 'default' : 'outline'}

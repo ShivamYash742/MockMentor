@@ -24,7 +24,9 @@ export interface IPerformanceAnalysis {
     analysis: string;
     recommendations: string[];
   };
-  bodyLanguage: {
+  // Omitted when the session had no camera data — the UI shows "Not assessed" rather than
+  // a score the model had no visual signal to base on.
+  bodyLanguage?: {
     score: number; // 0-100
     observations: string[];
     recommendations: string[];
@@ -114,7 +116,7 @@ const PerformanceAnalysisSchema = new mongoose.Schema({
     recommendations: [{ type: String }]
   },
   bodyLanguage: {
-    score: { type: Number, required: true, min: 0, max: 100 },
+    score: { type: Number, min: 0, max: 100 },
     observations: [{ type: String }],
     recommendations: [{ type: String }]
   }

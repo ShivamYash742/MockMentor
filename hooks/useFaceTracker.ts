@@ -12,7 +12,7 @@ import {
   EmotionScores,
 } from '@/lib/faceAnalysis';
 
-const FRAME_INTERVAL_MS = 200; // 5 fps — balances accuracy & performance
+const FRAME_INTERVAL_MS = 100; // 10 fps — smoother blink detection
 const CALIBRATION_FRAMES = 90;
 
 interface FrameRecord {
@@ -85,40 +85,29 @@ export function useFaceTracker(
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm',
         );
 
-        // Try local model first, fall back to Google CDN
-        const MODEL_LOCAL = '/models/face_landmarker.task';
+        // No local model is bundled with the app, so that path always 404'd — load from the
+        // CDN directly, trying the GPU delegate first and falling back to CPU.
         const MODEL_CDN = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+        const landmarkerOptions = (delegate: 'GPU' | 'CPU') => ({
+          baseOptions: {
+            modelAssetPath: MODEL_CDN,
+            delegate,
+          },
+          runningMode: 'VIDEO' as const,
+          numFaces: 1,
+          minFaceDetectionConfidence: 0.6,
+          minFacePresenceConfidence: 0.6,
+          minTrackingConfidence: 0.6,
+          outputFaceBlendshapes: true,
+          outputFacialTransformationMatrixes: true,
+        });
 
         let landmarker: FaceLandmarker;
         try {
-          landmarker = await FaceLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: MODEL_LOCAL,
-              delegate: 'GPU',
-            },
-            runningMode: 'VIDEO',
-            numFaces: 1,
-            minFaceDetectionConfidence: 0.6,
-            minFacePresenceConfidence: 0.6,
-            minTrackingConfidence: 0.6,
-            outputFaceBlendshapes: true,
-            outputFacialTransformationMatrixes: true,
-          });
+          landmarker = await FaceLandmarker.createFromOptions(vision, landmarkerOptions('GPU'));
         } catch {
-          console.warn('Local model not found, loading from CDN...');
-          landmarker = await FaceLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: MODEL_CDN,
-              delegate: 'GPU',
-            },
-            runningMode: 'VIDEO',
-            numFaces: 1,
-            minFaceDetectionConfidence: 0.6,
-            minFacePresenceConfidence: 0.6,
-            minTrackingConfidence: 0.6,
-            outputFaceBlendshapes: true,
-            outputFacialTransformationMatrixes: true,
-          });
+          console.warn('GPU delegate unavailable, falling back to CPU...');
+          landmarker = await FaceLandmarker.createFromOptions(vision, landmarkerOptions('CPU'));
         }
 
         landmarkerRef.current = landmarker;
@@ -276,9 +265,10 @@ export function useFaceTracker(
 
       frameLogRef.current.push(frameRecord);
 
-      // Keep max ~3 min of frames (5fps * 180s = 900)
-      if (frameLogRef.current.length > 1000) {
-        frameLogRef.current = frameLogRef.current.slice(-500);
+      // Keep enough frames for a full ~3 min interview at 10fps (1800), plus headroom, so
+      // raising the frame rate doesn't truncate a normal-length session mid-way through.
+      if (frameLogRef.current.length > 2200) {
+        frameLogRef.current = frameLogRef.current.slice(-1200);
       }
 
       setLastFrame(frameRecord as unknown as FaceResult);
@@ -318,16 +308,13 @@ export function useFaceTracker(
 
   // ── Reset session ──────────────────────────────────────────────────
   const resetSession = useCallback(() => {
+    // Runs between questions. calRef is deliberately left alone: it's the baseline computed
+    // from the first ~90 frames of the whole interview, and resetting it here made calibration
+    // re-run mid-question against whatever expression the candidate happened to have — not a
+    // neutral baseline.
     blinkStateRef.current = { count: 0, eyeClosed: false };
     startTimeRef.current = Date.now();
     processingStartedRef.current = false;
-    calRef.current = {
-      frameCount: 0,
-      baselineEar: 0.28,
-      baselineMovement: 0.001,
-      calEarAcc: 0,
-      calMovAcc: 0,
-    };
     frameLogRef.current = [];
     earSmoothRef.current = new WindowSmooth(3);
     emotionEMARef.current = new EMA(0.25);

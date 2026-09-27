@@ -51,7 +51,9 @@ interface ReportData {
       analysis: string;
       recommendations: string[];
     };
-    bodyLanguage: {
+    // Absent when the session had no camera data — rendered as "Not assessed" rather than
+    // a score with nothing behind it.
+    bodyLanguage?: {
       score: number;
       observations: string[];
       recommendations: string[];
@@ -307,7 +309,10 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
               { id: 'tech', title: "Technical Knowledge", data: report.performanceAnalysis.technicalKnowledge },
               { id: 'comm', title: "Communication Skills", data: report.performanceAnalysis.communicationSkills },
               { id: 'prob', title: "Problem Solving", data: report.performanceAnalysis.problemSolving },
-              { id: 'conf', title: "Confidence & Presence", data: report.performanceAnalysis.confidence }
+              { id: 'conf', title: "Confidence & Presence", data: report.performanceAnalysis.confidence },
+              ...(report.performanceAnalysis.bodyLanguage
+                ? [{ id: 'body', title: "Body Language", data: report.performanceAnalysis.bodyLanguage }]
+                : [])
             ].map((metric) => (
               <Card key={metric.id} className="bg-background/40 border-border/30 group hover:bg-background/60 transition-colors">
                 <CardContent className="p-6">
@@ -319,17 +324,34 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                   </div>
                   {/* Custom Progress styling via manual inline styles to inject color easily */}
                   <div className="h-2.5 w-full bg-slate-800 rounded-full overflow-hidden mb-4">
-                    <div 
+                    <div
                       className={`h-full rounded-full transition-all duration-1000 ${getProgressColor(metric.data.score)}`}
                       style={{ width: `${metric.data.score}%` }}
                     />
                   </div>
                   <p className="text-sm text-slate-400 leading-relaxed font-light">
-                    {metric.id === 'conf' ? (metric.data as unknown as { analysis: string }).analysis : (metric.data as unknown as { feedback: string }).feedback}
+                    {metric.id === 'conf'
+                      ? (metric.data as unknown as { analysis: string }).analysis
+                      : metric.id === 'body'
+                        ? (metric.data as unknown as { observations: string[] }).observations.join(' ')
+                        : (metric.data as unknown as { feedback: string }).feedback}
                   </p>
                 </CardContent>
               </Card>
             ))}
+            {!report.performanceAnalysis.bodyLanguage && (
+              <Card className="bg-background/40 border-border/30 border-dashed">
+                <CardContent className="p-6">
+                  <div className="flex justify-between items-end mb-4">
+                    <h4 className="font-semibold text-lg text-slate-200">Body Language</h4>
+                    <span className="text-sm font-medium text-slate-500">Not assessed</span>
+                  </div>
+                  <p className="text-sm text-slate-400 leading-relaxed font-light">
+                    No camera data was captured for this session.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
 

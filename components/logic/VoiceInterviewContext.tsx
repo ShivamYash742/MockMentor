@@ -18,6 +18,16 @@ export interface Message {
   id: string;
   sender: MessageSender;
   content: string;
+  // Real speech timing (from recognized speech only — undefined for typed/AI messages, never
+  // fabricated). durationMs: how long the candidate spoke. pauseBefore: how long they took to
+  // start answering.
+  durationMs?: number;
+  pauseBefore?: number;
+}
+
+export interface MessageMeta {
+  durationMs?: number;
+  pauseBefore?: number;
 }
 
 interface VoiceInterviewContextProps {
@@ -30,7 +40,7 @@ interface VoiceInterviewContextProps {
   isMuted: boolean;
   setIsMuted: (v: boolean) => void;
   messages: Message[];
-  addMessage: (sender: MessageSender, content: string) => void;
+  addMessage: (sender: MessageSender, content: string, meta?: MessageMeta) => void;
   clearMessages: () => void;
 }
 
@@ -55,8 +65,8 @@ export const VoiceInterviewProvider = ({ children }: { children: React.ReactNode
   const [isMuted, setIsMuted] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
 
-  const addMessage = useCallback((sender: MessageSender, content: string) => {
-    setMessages((prev) => [...prev, { id: Date.now().toString(), sender, content }]);
+  const addMessage = useCallback((sender: MessageSender, content: string, meta?: MessageMeta) => {
+    setMessages((prev) => [...prev, { id: Date.now().toString(), sender, content, ...meta }]);
   }, []);
 
   const clearMessages = useCallback(() => {
