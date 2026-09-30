@@ -315,6 +315,7 @@ All prompts live in `lib/prompts.json` — resume and job summaries, the intervi
 
 ## 🔮 Future Enhancements
 
+- A desktop app for Windows and Linux (Electron, with local Whisper speech-to-text). The step-by-step build guide is [`DESKTOP_APP_PLAN.md`](DESKTOP_APP_PLAN.md)
 - Hand and posture tracking in the browser
 - A smaller (int8-quantized) emotion model for faster first loads, and self-hosting the model file
 - Streaming AI replies, and Whisper speech-to-text for all browsers
