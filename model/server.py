@@ -7,39 +7,70 @@ GET  /api/health → JSON health check
 WS   /ws/{session_id} → frame-in / FrameResult-out
 
 Start: python server.py
-Env:   ML_PORT (default 8001), ML_ALLOWED_ORIGIN (default *)
+Env:   ML_PORT (default 8001), ML_ALLOWED_ORIGIN (default *),
+       ML_ACCESS_TOKEN (optional; when set, /ws/* requires ?token=<value>)
 """
 import base64
+import binascii
+import hmac
 import os
+import threading
 import time
+from contextlib import asynccontextmanager
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from starlette.concurrency import run_in_threadpool
 
-from tracker import Pipeline
+from tracker import Models, Pipeline
 from storage import SessionStorage
 
 ALLOWED_ORIGIN = os.environ.get("ML_ALLOWED_ORIGIN", "*")
+# CORS doesn't apply to WebSockets, so this token is what actually keeps strangers from using the
+# server's CPU. Browsers can't set headers on a WebSocket, hence a query parameter.
+ACCESS_TOKEN = os.environ.get("ML_ACCESS_TOKEN", "")
+# A 640x480 JPEG at the dashboard's quality is ~50 KB of base64; this leaves plenty of room.
+MAX_FRAME_B64_CHARS = 2_000_000
 
-app = FastAPI(title="MockMentor ML Sidecar", version="2.0.0", docs_url="/api/docs")
+_models: Models | None = None
+_models_lock = threading.Lock()
+
+
+def get_models() -> Models:
+    """The one shared set of models, loaded on first use. Each connection gets its own Pipeline
+    (its own blink counts, calibration and smoothing) on top of these."""
+    global _models
+    with _models_lock:
+        if _models is None:
+            _models = Models()
+        return _models
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Pre-warm so a model problem shows in the logs at boot, not on the first connection.
+    try:
+        await run_in_threadpool(get_models)
+        print("Models initialised successfully.")
+    except Exception as exc:
+        import traceback
+        print(f"FATAL: Models failed to initialise — {exc}")
+        traceback.print_exc()
+    yield
+    if _models is not None:
+        _models.close()
+
+
+app = FastAPI(title="MockMentor ML Sidecar", version="2.0.0", docs_url="/api/docs", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[ALLOWED_ORIGIN],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
-
-_pipeline: Pipeline | None = None
-
-
-def get_pipeline() -> Pipeline:
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = Pipeline()
-    return _pipeline
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,7 +395,8 @@ let _retries = 0;
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const wsUrl = `${proto}://${location.host}/ws/debug`;
+  const token = new URLSearchParams(location.search).get('token');
+  const wsUrl = `${proto}://${location.host}/ws/debug` + (token ? `?token=${encodeURIComponent(token)}` : '');
   const label = document.getElementById('ws-url-label');
   if (label) label.textContent = wsUrl;
   ws = new WebSocket(wsUrl);
@@ -483,22 +515,8 @@ async def api_root():
 
 @app.get("/api/health")
 async def health():
-    pipeline_ok = _pipeline is not None
+    pipeline_ok = _models is not None
     return {"status": "ok", "pipeline_ready": pipeline_ok, "ts": time.time()}
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Pre-warm pipeline so crash appears in Render logs at boot, not on first WS."""
-    import asyncio, concurrent.futures
-    loop = asyncio.get_event_loop()
-    try:
-        await loop.run_in_executor(None, get_pipeline)
-        print("Pipeline initialised successfully.")
-    except Exception as exc:
-        import traceback
-        print(f"FATAL: Pipeline failed to initialise — {exc}")
-        traceback.print_exc()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -510,13 +528,18 @@ async def ws_endpoint(websocket: WebSocket, session_id: str):
     Client → Server: {"frame": "<base64 JPEG>", "ts": 1234567890.123}
     Server → Client: FrameResult JSON
 
-    Control commands:
+    Control commands (they affect this connection only):
       {"cmd": "reset"}   — reset blink/calibration counters
       {"cmd": "summary"} — return session aggregate
     """
+    given = websocket.query_params.get("token", "").encode()
+    if ACCESS_TOKEN and not hmac.compare_digest(given, ACCESS_TOKEN.encode()):
+        await websocket.close(code=1008)  # policy violation
+        return
+
     await websocket.accept()
     try:
-        pipeline = get_pipeline()
+        models = await run_in_threadpool(get_models)
     except Exception as init_exc:
         import traceback
         traceback.print_exc()
@@ -524,6 +547,8 @@ async def ws_endpoint(websocket: WebSocket, session_id: str):
         await websocket.close()
         return
 
+    # This connection's own state on top of the shared models.
+    pipeline = Pipeline(models=models)
     storage = SessionStorage()
     storage.session_id = session_id
 
@@ -543,29 +568,42 @@ async def ws_endpoint(websocket: WebSocket, session_id: str):
                 continue
 
             frame_b64 = data.get("frame")
-            if not frame_b64:
+            if not frame_b64 or not isinstance(frame_b64, str):
+                continue
+            if len(frame_b64) > MAX_FRAME_B64_CHARS:
+                await websocket.send_json({"error": "frame too large"})
                 continue
 
-            jpg_bytes = base64.b64decode(frame_b64)
-            np_arr = np.frombuffer(jpg_bytes, np.uint8)
-            frame_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-            if frame_bgr is None:
+            # One bad frame is reported and skipped; it used to end the whole session.
+            try:
+                jpg_bytes = base64.b64decode(frame_b64, validate=True)
+                frame_bgr = cv2.imdecode(np.frombuffer(jpg_bytes, np.uint8), cv2.IMREAD_COLOR)
+                if frame_bgr is None:
+                    await websocket.send_json({"error": "invalid frame"})
+                    continue
+                ts = data.get("ts")
+                ts = float(ts) if isinstance(ts, (int, float)) else time.time()
+                # MediaPipe and the emotion model are CPU-bound: run them off the event loop, so
+                # one busy session doesn't stall every other connection.
+                result = await run_in_threadpool(pipeline.process, frame_bgr, ts)
+            except (binascii.Error, ValueError):
                 await websocket.send_json({"error": "invalid frame"})
                 continue
+            except Exception as exc:
+                print(f"Frame processing failed: {exc}")
+                await websocket.send_json({"error": "frame processing failed"})
+                continue
 
-            ts = data.get("ts", time.time())
-            result = pipeline.process(frame_bgr, ts)
             result_dict = result.to_dict()
             storage.push(result_dict)
-
             await websocket.send_json(result_dict)
 
     except WebSocketDisconnect:
         pass
     except Exception as exc:
+        print(f"WebSocket session ended with an error: {exc}")
         try:
-            await websocket.send_json({"error": str(exc)})
+            await websocket.close(code=1011)
         except Exception:
             pass
 

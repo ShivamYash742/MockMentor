@@ -40,9 +40,10 @@ class SessionStorage:
         # Looking at screen fraction
         look_frac = round(sum(1 for f in frames if f["gaze"]["looking_at_screen"]) / n, 3)
 
+        duration_s = time.time() - self._start
         return {
             "session_id": self.session_id,
-            "duration_s": round(time.time() - self._start, 1),
+            "duration_s": round(duration_s, 1),
             "frame_count": n,
             "emotions_avg": emotions_avg,
             "dominant_histogram": dominant_histogram,
@@ -53,7 +54,9 @@ class SessionStorage:
             "attention_avg": avg("attention"),
             "attention_on_screen_frac": look_frac,
             "total_blinks": total_blinks,
-            "blinks_per_min_avg": avg("blinks_per_min", "eye"),
+            # Blinks over the whole window, as in lib/faceAnalysis.ts. Averaging each frame's
+            # running rate was inflated early on (one blink in the first second reads as 60/min).
+            "blinks_per_min_avg": round(total_blinks / (duration_s / 60.0), 2) if duration_s > 0 else 0.0,
         }
 
     def clear(self):

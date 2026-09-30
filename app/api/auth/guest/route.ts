@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import dbConnect from '@/lib/mongodb';
 import GuestUser from '@/lib/models/GuestUser';
+import { LIMITS, clientIp, rateLimit } from '@/lib/rateLimit';
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,6 +16,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (!guestUser) {
+      // Each new guest gets a free interview, so minting them is limited per IP.
+      const limited = await rateLimit([[LIMITS.guestCreatePerIp, clientIp(req)]]);
+      if (limited) return limited;
       const newGuestId = crypto.randomUUID();
       guestUser = new GuestUser({
         guestId: newGuestId,

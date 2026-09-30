@@ -11,9 +11,11 @@ import { getMentorById } from '@/lib/mentors';
 import { GRACE_MS, isInterviewLive } from '@/lib/interviewWindow';
 import { START_INTERVIEW, USER_PAUSED } from '@/lib/chatProtocol';
 import { sanitizeTiming } from '@/lib/sessionLifecycle';
+import { INPUT_LIMITS } from '@/lib/inputLimits';
+import { aiLimits, rateLimit } from '@/lib/rateLimit';
 
 const MAX_HISTORY_MESSAGES = 20;
-const MAX_MESSAGE_CHARS = 2000;
+const MAX_MESSAGE_CHARS = INPUT_LIMITS.answerChars;
 // Caps how many AI calls one interview can make: every call stores at least one message.
 const MAX_SESSION_MESSAGES = 60;
 
@@ -90,6 +92,8 @@ export async function POST(request: NextRequest) {
       if (lastQuestion) {
         return NextResponse.json({ success: true, response: lastQuestion.text, resumed: true });
       }
+      const limited = await rateLimit(aiLimits(request, requester));
+      if (limited) return limited;
       const response = await generateReply(getInterviewWelcomePrompt(knowledgeBase, role));
       await appendMessages(session._id, [newMessage('interviewer', response)]);
       return NextResponse.json({ success: true, response });
@@ -98,6 +102,8 @@ export async function POST(request: NextRequest) {
     if (session.messages.length >= MAX_SESSION_MESSAGES) {
       return NextResponse.json({ success: false, error: 'message_limit' }, { status: 409 });
     }
+    const limited = await rateLimit(aiLimits(request, requester));
+    if (limited) return limited;
 
     const isUserPaused = message === USER_PAUSED;
     const systemPrompt = getInterviewConversationPrompt({

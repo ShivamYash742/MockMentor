@@ -46,6 +46,8 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
         setReportGenerated(true);
       } else if (data.error === 'no_answers') {
         setNothingToGrade(true);
+      } else if (data.error === 'rate_limit') {
+        setError(data.message); // a wait, not a failure: doesn't use up a retry
       } else {
         throw new Error(data.error || 'Report generation failed');
       }

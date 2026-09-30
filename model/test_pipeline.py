@@ -24,6 +24,7 @@ FACES = [((655, 1033, 1008), "happy"), ((1134, 1285, 1008), "angry"), ((1638, 12
 def load_image():
     path = os.path.join(tracker._MODEL_DIR, "_test_faces.jpg")
     if not os.path.exists(path):
+        os.makedirs(tracker._MODEL_DIR, exist_ok=True)  # a fresh checkout has no models/ yet
         urllib.request.urlretrieve(IMG_URL, path)
     return cv2.imread(path)
 

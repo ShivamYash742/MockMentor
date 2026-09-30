@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequester } from '@/lib/requester';
-import { serverStorage, BUCKET_ID } from '@/lib/appwrite-server';
-import { ID } from 'node-appwrite';
 import { parsePDF } from '@/lib/pdf';
-import { summarizeAndSaveResume } from '@/lib/resumeProfile';
+import { saveResumeProfile, summarizeResume } from '@/lib/resumeProfile';
+import { INPUT_LIMITS } from '@/lib/inputLimits';
+import { aiLimits, rateLimit } from '@/lib/rateLimit';
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_FILE_BYTES = INPUT_LIMITS.resumeBytes;
+// Room for the multipart envelope around the file itself.
+const MAX_BODY_BYTES = MAX_FILE_BYTES + 64 * 1024;
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,10 +16,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const formData = await req.formData();
-    const file = formData.get('resume') as File | null;
+    // Refuse an oversized upload before reading it into memory.
+    const declaredBytes = Number(req.headers.get('content-length') ?? 0);
+    if (declaredBytes > MAX_BODY_BYTES) {
+      return NextResponse.json({ error: 'File is too large (max 5MB)' }, { status: 413 });
+    }
 
-    if (!file) {
+    const formData = await req.formData();
+    const file = formData.get('resume');
+
+    if (!(file instanceof File)) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
     if (file.size > MAX_FILE_BYTES) {
@@ -29,7 +37,7 @@ export async function POST(req: NextRequest) {
     const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf');
     const isTxt = file.type === 'text/plain' || lowerName.endsWith('.txt');
 
-    // Parse and validate content BEFORE anything is uploaded to Appwrite.
+    // Parse and validate content BEFORE anything is stored.
     let fileContent: string;
     if (isPdf) {
       if (fileBuffer.subarray(0, 4).toString('latin1') !== '%PDF') {
@@ -57,29 +65,44 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Upload only now that the file has passed every check.
-    const fileId = ID.unique();
-    const uploadFile = new File([fileBuffer], file.name, { type: file.type });
-    await serverStorage.createFile(BUCKET_ID, fileId, uploadFile);
+    const limited = await rateLimit(aiLimits(req, requester));
+    if (limited) return limited;
 
-    const endpoint = process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT;
-    const projectId = process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID;
-    const fileUrl = `${endpoint}/storage/buckets/${BUCKET_ID}/files/${fileId}/view?project=${projectId}`;
+    const resumeSummary = await summarizeResume(fileContent);
 
-    const { resumeSummary, userProfile } = await summarizeAndSaveResume(fileContent, fileUrl, requester);
+    // Only a signed-in user's resume is stored, and only the latest one. Guests have no profile,
+    // so their files used to be kept with nothing pointing to them. Appwrite is loaded here, not
+    // at the top, so guest uploads work even where storage isn't configured.
+    let userProfile = null;
+    if (requester.userId) {
+      const { serverStorage, BUCKET_ID } = await import('@/lib/appwrite-server');
+      const { ID } = await import('node-appwrite');
+      const fileId = ID.unique();
+      await serverStorage.createFile(BUCKET_ID, fileId, new File([fileBuffer], file.name, { type: file.type }));
+      const endpoint = process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT;
+      const projectId = process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID;
+      const url = `${endpoint}/storage/buckets/${BUCKET_ID}/files/${fileId}/view?project=${projectId}`;
+
+      const saved = await saveResumeProfile(requester.userId, resumeSummary, { url, fileId });
+      userProfile = saved.userProfile;
+      if (saved.replacedFileId) {
+        await serverStorage.deleteFile(BUCKET_ID, saved.replacedFileId).catch((err: unknown) => {
+          console.warn('Could not delete the replaced resume file:', err);
+        });
+      }
+    }
 
     return NextResponse.json({
       success: true,
-      fileUrl,
       resumeSummary,
       userProfile,
       extractedTextLength: fileContent.length,
     });
   } catch (error) {
+    // Details stay in the server log; they used to be sent to the client.
     console.error('Error uploading resume:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Failed to upload resume';
     return NextResponse.json(
-      { error: 'Failed to upload resume', details: errorMessage },
+      { error: 'Failed to upload your resume. Please try again.' },
       { status: 500 }
     );
   }

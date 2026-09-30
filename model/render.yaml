@@ -7,4 +7,8 @@ services:
     envVars:
       - key: ML_ALLOWED_ORIGIN
         value: "*"
+      # CORS doesn't cover WebSockets; this token does. Render generates a random value, so a
+      # fresh deploy isn't open to anyone. Clients connect to /ws/<id>?token=<value>.
+      - key: ML_ACCESS_TOKEN
+        generateValue: true
     plan: free

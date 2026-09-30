@@ -12,6 +12,7 @@ import { sanitizeFaceAnalytics, type SanitizedFaceAnalytics } from '@/lib/faceAn
 import { reportSchema, type ReportOutput } from '@/lib/reportSchema';
 import { enforceRubric } from '@/lib/reportRules';
 import { closeSession, computeSessionMetrics, type SessionMetrics } from '@/lib/sessionLifecycle';
+import { aiLimits, rateLimit } from '@/lib/rateLimit';
 import type { IMessage } from '@/lib/models/InterviewSession';
 
 // A full structured report is a lot of output; the 8s default meant for chat replies is too short.
@@ -132,6 +133,9 @@ export async function POST(req: NextRequest) {
       );
     }
     const spokenAnswers = answers.filter((m) => typeof m.duration === 'number' && m.duration > 0).length;
+
+    const limited = await rateLimit(aiLimits(req, requester));
+    if (limited) return limited;
 
     const metrics = computeSessionMetrics(session.messages, session.startTime, session.endTime ?? new Date());
     const faceAnalytics = sanitizeFaceAnalytics(session.faceAnalytics) ?? sanitizeFaceAnalytics(clientFaceAnalytics);

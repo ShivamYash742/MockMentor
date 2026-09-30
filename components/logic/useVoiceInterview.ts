@@ -56,6 +56,7 @@ export const useVoiceInterview = () => {
       state.nudges = 0;
       addMessage(MessageSender.CLIENT, text, meta);
     }
+    setNotice(null);
     stopListening();
     setProcessing(true);
 
@@ -83,6 +84,14 @@ export const useVoiceInterview = () => {
             ? "Time's up for this interview. End it to generate your report."
             : "This interview has reached its message limit. End it to generate your report."
         );
+      } else if (data.error === 'rate_limit') {
+        // Our own limit (429) or the AI provider's: say so, and give the turn back to the
+        // candidate so they can try again, instead of a generic spoken apology.
+        setNotice(data.message || 'The interviewer is busy right now. Please wait a moment and answer again.');
+        setTimeout(() => {
+          const s = aiStateRef.current;
+          if (s.isActive && !s.isMuted && !s.isPaused && !s.isProcessing) startListening();
+        }, 200);
       } else {
         console.error("AI chat error", data.error);
         await speakMessage(APOLOGY);

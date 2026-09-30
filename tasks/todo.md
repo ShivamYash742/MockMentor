@@ -682,7 +682,7 @@ How I verified: I ran the real `useSpeechToText` hook, an exact copy of the came
 - [x] **Step 6: live interview:** A1, A2, A5, A6, A7, A8, plus message order and ids from D.
 - [x] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
 - [x] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
-- [ ] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
+- [x] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
 - [ ] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
 - The ideas in E stay a backlog until you choose some.
 
@@ -830,3 +830,64 @@ The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq
 - **API:** 6/6 new checks (`process-resume` without `fileUrl`, old payloads still accepted, guest reuse and 404). Steps 6 and 7 suites still pass: 25/25 and 28/28.
 
 **Not verified here:** the real Clerk sign-in modal, because it needs real keys.
+
+### Review — Step 9: abuse and cost controls (2026-09-30)
+**What changed**
+- **C19, rate limits:** `lib/rateLimit.ts` uses fixed-window counters in MongoDB (`lib/models/RateLimit.ts`, with a TTL index), so no new infrastructure is needed. Over a limit, the response is `429` with a readable message and `Retry-After`.
+
+  | Limit | Applies to | Value |
+  |---|---|---|
+  | New guests | per IP | 20 / hour (reusing an existing guest id is never limited) |
+  | AI calls | per user or guest | 100 / hour |
+  | AI calls | per IP | 600 / hour |
+  | Interviews | per signed-in user | 20 / day |
+  | Messages | per interview | 60 (the cap from Step 6) |
+
+  - The AI limits cover `ai-chat`, `process-job`, `process-resume`, `upload-resume` and `generate-report`.
+  - The IP limits are set high because a classroom or office can share one IP. They're all in `LIMITS` if you want to change them.
+  - **How the IP is read:** `x-real-ip` first, otherwise the **last** `x-forwarded-for` entry, which is the one the nearest proxy added. The first entry can be written by the caller on proxies that append, so it's never used; the spoofing attempt is tested.
+  - **Loopback counts as unknown**, and unknown skips the IP limit (per-identity limits still apply). Next fills in the socket address when no proxy did. So without this, local dev, or a same-host proxy that doesn't forward the client IP, would put every visitor into one shared bucket: 20 new guests per hour for everyone combined. The first test run found this.
+  - **Client side:** the interview shows the limit as a notice and gives the turn back, with no spoken apology. The completion screen shows it without using up a retry. The setup page shows the message.
+- **C20, size limits:** `lib/inputLimits.ts` is shared by the setup page and the API.
+  - `process-job`: title ≤ 200 and description ≤ 10,000 characters, strings only.
+  - `create-interview`: every field is type-checked, and the mentor must exist. Summaries echoed back from the client are cut to 4,000 characters.
+  - `upload-resume`: refuses an oversized body from its declared `Content-Length` (413) before reading it, and returns 400 (not 500) when `resume` isn't a file.
+  - A failed interview save now gives the guest's one interview back.
+- **C21** was done in Step 6.
+- **C22, leaked errors:** `upload-resume` and `process-resume` no longer return `details: error.message`. It's logged on the server only.
+- **C23, resume retention:**
+  - Guests' uploads are no longer stored at all; the summary is all they need.
+  - A signed-in user's resume is stored, and the file it replaces is deleted (`resumeFileId` on the profile, with a fallback that reads the id from older URLs).
+  - The summary is made before the upload, so an AI failure can't leave an orphaned file.
+  - Appwrite is loaded only for signed-in uploads, so guest uploads work without storage configured.
+- **C24, Python sidecar** (fixed rather than removed, per your earlier "integrate later" decision):
+  - **Per-connection state.** `tracker.Models` holds the heavy models, loaded once, with a lock and one shared MediaPipe timestamp counter (VIDEO mode needs increasing timestamps per landmarker). Each connection gets its own `Pipeline` on top. `Pipeline()` with no arguments still loads its own models, so `new.py` and the tests are unchanged.
+  - **CPU work runs in a worker thread,** so one busy session doesn't block the others.
+  - **A bad frame** (not base64, not an image, too large) is reported and skipped. It used to end the whole session.
+  - **Optional `ML_ACCESS_TOKEN`:** WebSockets aren't covered by CORS. Both `render.yaml` files have Render generate a random token, and the dashboard passes `?token=` through.
+  - **Found while doing this:** `process()` inserted into `sys.path` on **every frame**, so the list grew without bound. `schema` is now imported once.
+  - The blink rate now matches the TypeScript version (B18). `on_event("startup")` became a lifespan handler.
+  - `test_pipeline.py` failed on a fresh checkout because `models/` didn't exist yet. Fixed.
+
+**Proof**
+- `lint`, `typecheck` and `build` pass. `test`: **33/33, with 0 skipped.** The browser-vs-Python emotion parity test ran here for the first time this session and passes.
+- **API end to end: 23/23.**
+  - the 21st guest from one IP → 429 with `Retry-After`, while another IP is unaffected;
+  - a spoofed first `x-forwarded-for` entry is still limited, and `x-real-ip` wins;
+  - 25 guests with no proxy header all succeed;
+  - 100 AI calls pass and the 101st → 429, while another guest is unaffected;
+  - an IP preset to 600 → 429 even for a fresh guest;
+  - the TTL index exists;
+  - every size and type cap;
+  - an unknown mentor → 400;
+  - a failed create keeps the guest's interview;
+  - a guest upload works with no storage configured;
+  - errors carry no details;
+  - 6 MB → 413, and a non-file → 400.
+- Earlier suites still pass: Step 6 25/25, Step 7 28/28, Step 8 6/6. **Browser: 9 interview scenarios pass**, including the new rate-limit one.
+- **Sidecar:**
+  - `test_pipeline.py` 3/3 and the new `test_server.py` 2/2: pipelines sharing models keep separate state; the server refuses a missing token (1008), skips bad and oversized frames, gives two simultaneous users their own readings, and keeps summaries per connection.
+  - `/api/health` answered within **6 ms** while a session was processing 30 frames at **69 ms** each.
+  - Against the **old** server, two users at once (happy face, angry face) both came back "happy". The second user got the first user's reading.
+
+**Note:** running the sidecar outside Docker needs the GL libraries its Dockerfile installs, plus `LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=swrast EGL_PLATFORM=surfaceless`.

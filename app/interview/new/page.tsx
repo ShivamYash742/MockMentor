@@ -21,6 +21,7 @@ import Navbar from '@/components/navbar';
 import { cn, guestHeaders } from '@/lib/utils';
 import { mentors } from '@/components/mentors';
 import { checkStoredGuest, startGuestSession } from '@/lib/guestSession';
+import { INPUT_LIMITS } from '@/lib/inputLimits';
 
 interface UserProfile {
   resumeUrl?: string;
@@ -31,16 +32,19 @@ interface UserProfile {
 // so without one the page asks first instead of failing each step with a vague 401.
 type Identity = 'checking' | 'none' | 'user' | 'guest' | 'guest-used';
 
-// Mirror the server's limits so problems show up before anything is uploaded.
-const MAX_RESUME_BYTES = 5 * 1024 * 1024;
-const MAX_RESUME_CHARS = 20_000;
-const MAX_JOB_TITLE_CHARS = 200;
-const MAX_JOB_DESCRIPTION_CHARS = 10_000;
+// The server's limits, so problems show up before anything is uploaded.
+const {
+  resumeBytes: MAX_RESUME_BYTES,
+  resumeChars: MAX_RESUME_CHARS,
+  jobTitleChars: MAX_JOB_TITLE_CHARS,
+  jobDescriptionChars: MAX_JOB_DESCRIPTION_CHARS,
+} = INPUT_LIMITS;
 
-// Reads the error message from a failed API response, whatever shape it came back in.
+// Reads the error message from a failed API response, whatever shape it came back in. `message`
+// comes first: some responses put a code in `error` (e.g. "rate_limit") and the text in `message`.
 async function responseError(response: Response, fallback: string): Promise<string> {
   const data = await response.json().catch(() => null);
-  return (data && (data.error || data.message)) || `${fallback} (error ${response.status})`;
+  return (data && (data.message || data.error)) || `${fallback} (error ${response.status})`;
 }
 
 export default function NewInterviewPage() {
