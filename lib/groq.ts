@@ -7,6 +7,8 @@ if (!process.env.GROQ_API_KEY) {
 
 export const groq = createGroq({
   apiKey: process.env.GROQ_API_KEY,
+  // Optional: an OpenAI-compatible stand-in (a proxy, or a local mock for end-to-end tests).
+  ...(process.env.GROQ_BASE_URL ? { baseURL: process.env.GROQ_BASE_URL } : {}),
 });
 
 // Bigger model first: better quality, with the smaller one as a fallback if it's unavailable.

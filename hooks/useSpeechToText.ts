@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createAnswerAccumulator, type SpeechResultList } from "@/lib/speechAnswer";
 
 // Add TypeScript definitions for Web Speech API
 interface SpeechRecognition extends EventTarget {
@@ -30,15 +31,7 @@ declare global {
 // Basic type definitions for Web Speech API
 interface SpeechRecognitionEvent {
   resultIndex: number;
-  results: {
-    length: number;
-    [index: number]: {
-      isFinal: boolean;
-      [index: number]: {
-        transcript: string;
-      };
-    };
-  };
+  results: SpeechResultList;
 }
 
 interface SpeechRecognitionErrorEvent {
@@ -77,8 +70,14 @@ export const useSpeechToText = (options?: {
   // of the fixed placeholders the app used to save with every message.
   const listenStartRef = useRef(0);
   const speechStartRef = useRef<number | null>(null);
-  const transcriptRef = useRef(""); // Keep track in a ref for the timeout closure
+  // The answer being spoken. Read synchronously by the silence timer, so it never lags a render
+  // behind the way the old transcript-state-mirrored-into-a-ref did.
+  const answerRef = useRef(createAnswerAccumulator());
   const isIntentionallyStopped = useRef(false);
+  // True between startListening() and the recognizer's next onstart. The browser also restarts
+  // recognition on its own (Chrome ends it after ~8s of silence); those restarts must not reset
+  // the silence watchdog or the answer's timing, or the "you've gone quiet" nudge never fires.
+  const newTurnRef = useRef(false);
 
   const lang = options?.lang || "en-US";
   const continuous = options?.continuous ?? true;
@@ -92,10 +91,6 @@ export const useSpeechToText = (options?: {
   useEffect(() => {
     onSilenceTimeoutRef.current = options?.onSilenceTimeout;
   }, [options?.onSilenceTimeout]);
-
-  useEffect(() => {
-    transcriptRef.current = transcript;
-  }, [transcript]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -116,6 +111,8 @@ export const useSpeechToText = (options?: {
     recognition.onstart = () => {
       setIsListening(true);
       setError(null);
+      if (!newTurnRef.current) return; // an automatic restart within the same turn
+      newTurnRef.current = false;
 
       // Arm the "total silence" watchdog for this listening turn, and start the clock for
       // real pauseBefore/durationMs timing.
@@ -133,6 +130,10 @@ export const useSpeechToText = (options?: {
     };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
+      // After stopListening() the recognizer may still deliver a final result for audio it had
+      // buffered. That answer was already handed off (interim text included), so drop it.
+      if (isIntentionallyStopped.current) return;
+
       // Any result — interim or final — means the user isn't silent; disarm the watchdog above.
       if (!hasHeardSpeechRef.current) {
         hasHeardSpeechRef.current = true;
@@ -143,40 +144,26 @@ export const useSpeechToText = (options?: {
         totalSilenceTimerRef.current = null;
       }
 
-      let currentInterim = "";
-      let currentFinal = "";
+      const answer = answerRef.current;
+      answer.push(event.resultIndex, event.results);
+      setTranscript(answer.finalText);
+      setInterimTranscript(answer.interim);
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          currentFinal += event.results[i][0].transcript;
-        } else {
-          currentInterim += event.results[i][0].transcript;
-        }
-      }
-
-      setInterimTranscript(currentInterim);
-      if (currentFinal) {
-        setTranscript((prev) => {
-          const newTranscript = prev + (prev && currentFinal.trim() ? " " : "") + currentFinal.trim();
-          return newTranscript;
-        });
-      }
-
-      // Silence detection logic
+      // Silence detection: the answer is complete once no new result arrives for silenceTimeoutMs.
       if (silenceTimeoutRef.current) {
         clearTimeout(silenceTimeoutRef.current);
       }
-      
+
       if (onSilenceTimeoutRef.current) {
         silenceTimeoutRef.current = setTimeout(() => {
-          const combinedReady = transcriptRef.current + (transcriptRef.current && currentFinal.trim() ? " " : "") + currentFinal.trim();
-          if (combinedReady.trim().length > 0 && onSilenceTimeoutRef.current) {
+          const text = answerRef.current.answer();
+          if (text && onSilenceTimeoutRef.current) {
             const pauseBefore = speechStartRef.current !== null ? speechStartRef.current - listenStartRef.current : 0;
             // Speaking duration excludes the trailing silenceTimeoutMs spent confirming they'd finished.
             const durationMs = speechStartRef.current !== null
               ? Math.max(0, (Date.now() - silenceTimeoutMs) - speechStartRef.current)
               : 0;
-            onSilenceTimeoutRef.current(combinedReady.trim(), { durationMs, pauseBefore });
+            onSilenceTimeoutRef.current(text, { durationMs, pauseBefore });
           }
         }, silenceTimeoutMs);
       }
@@ -257,8 +244,9 @@ export const useSpeechToText = (options?: {
     setError(null);
     setTranscript("");
     setInterimTranscript("");
-    transcriptRef.current = "";
+    answerRef.current.reset();
     isIntentionallyStopped.current = false;
+    newTurnRef.current = true;
     
     // Check microphone permissions first
     if (navigator.permissions) {
@@ -316,7 +304,8 @@ export const useSpeechToText = (options?: {
       clearTimeout(totalSilenceTimerRef.current);
     }
     isIntentionallyStopped.current = true;
-    
+    setInterimTranscript("");
+
     try {
       recognitionRef.current?.stop();
     } catch (e) {
@@ -327,7 +316,7 @@ export const useSpeechToText = (options?: {
   const clearTranscript = useCallback(() => {
     setTranscript("");
     setInterimTranscript("");
-    transcriptRef.current = "";
+    answerRef.current.reset();
   }, []);
 
   return {

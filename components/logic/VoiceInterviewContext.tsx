@@ -41,6 +41,8 @@ interface VoiceInterviewContextProps {
   setIsMuted: (v: boolean) => void;
   messages: Message[];
   addMessage: (sender: MessageSender, content: string, meta?: MessageMeta) => void;
+  // Restores a transcript (e.g. the server's copy after a page refresh).
+  replaceMessages: (messages: Message[]) => void;
   clearMessages: () => void;
 }
 
@@ -55,8 +57,14 @@ const VoiceInterviewContext = createContext<VoiceInterviewContextProps>({
   setIsMuted: () => {},
   messages: [],
   addMessage: () => {},
+  replaceMessages: () => {},
   clearMessages: () => {},
 });
+
+// Date.now() ids collided when two messages landed in the same millisecond (duplicate React keys).
+function newMessageId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 export const VoiceInterviewProvider = ({ children }: { children: React.ReactNode }) => {
   const [sessionState, setSessionState] = useState(VoiceSessionState.INACTIVE);
@@ -66,7 +74,11 @@ export const VoiceInterviewProvider = ({ children }: { children: React.ReactNode
   const [messages, setMessages] = useState<Message[]>([]);
 
   const addMessage = useCallback((sender: MessageSender, content: string, meta?: MessageMeta) => {
-    setMessages((prev) => [...prev, { id: Date.now().toString(), sender, content, ...meta }]);
+    setMessages((prev) => [...prev, { id: newMessageId(), sender, content, ...meta }]);
+  }, []);
+
+  const replaceMessages = useCallback((next: Message[]) => {
+    setMessages(next);
   }, []);
 
   const clearMessages = useCallback(() => {
@@ -86,6 +98,7 @@ export const VoiceInterviewProvider = ({ children }: { children: React.ReactNode
         setIsMuted,
         messages,
         addMessage,
+        replaceMessages,
         clearMessages,
       }}
     >

@@ -24,7 +24,7 @@ export default function EmotionDemoPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const { lastFrame, emotionSource } = useFaceTracker(videoRef, null, cameraOn);
+  const { lastFrame, emotionSource } = useFaceTracker(videoRef, cameraOn);
 
   const stopCamera = () => {
     (videoRef.current?.srcObject as MediaStream | null)?.getTracks().forEach((t) => t.stop());

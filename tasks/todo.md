@@ -558,7 +558,7 @@ Two commits: (1) the `model/` upgrade already done, (2) this integration. Tell m
 
 ## Audit #2 — bugs and upgrade ideas (2026-09-30)
 
-> **Status: findings only. No code has changed.** Waiting for your go-ahead before starting any step below.
+> **Status: you said go (2026-09-30): "work on them one by one, nothing should be left". Working through Steps 6–10 in order, one commit per step. Reviews are at the end of this section.**
 
 I read every source file again after the v2.0.0 release. Baseline: `lint`, `typecheck` and `test` (18 pass, 1 skipped) all pass, and `npm audit` reports 0 vulnerabilities. Items marked **(verified)** were reproduced. Everything else comes from reading the code, with the exact line.
 
@@ -679,9 +679,70 @@ How I verified: I ran the real `useSpeechToText` hook, an exact copy of the came
 - Privacy: a resume retention policy, "delete my data", and a short camera and privacy notice.
 
 ### Proposed order (one step at a time, checking in after each)
-- [ ] **Step 6: live interview:** A1, A2, A5, A6, A7, A8, plus message order and ids from D.
+- [x] **Step 6: live interview:** A1, A2, A5, A6, A7, A8, plus message order and ids from D.
 - [ ] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
 - [ ] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
 - [ ] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
 - [ ] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
 - The ideas in E stay a backlog until you choose some.
+
+### How each step is verified
+A local rig, all in my scratchpad, nothing added to the repo:
+- a throwaway `mongo:7` in Docker;
+- a fake Groq server that speaks the same OpenAI-style API. It logs every prompt, and it can be told to fail or return edge-case reports;
+- `next build` + `next start` with placeholder keys, and end-to-end API scripts against that;
+- a browser harness that runs the **real** `components/interview.tsx` in headless Chromium, with a fake mic (`SpeechRecognition`), speaker (`speechSynthesis`), camera and API. It uses the app's own compiled CSS, so the layout is real too.
+
+The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq.ts`, which is documented in `.env.example` and does nothing unless it's set.
+
+### Review — Step 6: live interview (2026-09-30)
+**What changed**
+- **A1, spoken answers doubled.** The answer is now built by a small pure module, `lib/speechAnswer.ts` (5 unit tests). The hook reads it synchronously, so nothing is appended twice.
+  - Results that arrive after the hook stops listening are dropped, since that answer was already sent with its unfinished words included.
+  - Chrome's own automatic restarts (after about 8 s of silence) no longer reset the silence timer or the answer's timing. Only a new turn does.
+- **Silence nudge:** at most 2 in a row, and a real answer resets the count.
+- **A2, camera stayed on.** The stream is kept in its own ref and stopped in the effect's cleanup, including when the interview ends or the page unmounts. A camera request that finishes after the camera was turned off is stopped straight away.
+- **The server now keeps the transcript (fixes C21, message order, and id collisions).**
+  - `/api/ai-chat` saves the candidate's answer (with clamped timing) and the interviewer's reply to the session itself, in order, with server-generated ids.
+  - The prompt's history comes from that copy, and the client-sent `conversationHistory` is ignored.
+  - `add_message` is gone.
+  - Check-ins after silence are stored with `kind: 'nudge'`.
+  - An answer is kept even if the AI call fails.
+  - There's a per-interview cap of 60 messages (`409 message_limit`).
+- **A refresh restores the interview.** `start` returns the saved transcript. `START_INTERVIEW` on an interview that already has messages repeats the last question (`resumed: true`) instead of generating a second welcome.
+- **Metrics are computed on the server** (`lib/sessionLifecycle.ts`) from the stored transcript and the start/end times, whenever a session closes: the client's "end", the stale-interview auto-close, and (Step 7) report generation. Client-sent metrics are ignored.
+- **B15, camera summary lost on refresh.** It's now sent with "end" and stored (sanitized) on the session.
+- **A5:** a reply that arrives after the interview ended is never spoken or added. `exitInterview` silences voice and mic first, before its network calls.
+- **A6:** Send is disabled while the interviewer is thinking or speaking, and typed text is kept, not cleared. The status shows "Thinking...", and the typing dots now show (they could never appear before).
+- **A7:** the mic doesn't restart after a reply while paused. A banner says the clock keeps running.
+- **A8:** `ScrollArea` gained a `viewportRef`, and the transcript scrolls to the newest message.
+- **Messages:** unique `crypto.randomUUID()` ids in the voice context.
+- **Timers:** the welcome and gaze-banner timers are cleared on unmount.
+- **Face tracker:** the unused `sessionId` parameter is gone, `isSidecarAvailable` is renamed `isTrackerReady`, and the interview uses `isConnected`. The HUD no longer shows a frozen reading while the camera is off.
+- **Accessibility:** every icon-only button has an `aria-label`, and the toggles have `aria-pressed`.
+- **Found while verifying (not in the audit):**
+  - **The Start button was below the fold.** The full-screen "Your interview is starting soon" placeholder showed until the interview connected, which only happens after Start is clicked. On a 1280×800 screen the button sat at y=1143. The placeholder is removed, and the button now shows "Starting...".
+  - **The transcript panel never scrolled.** It grew with the page, so with a long transcript the answer box was pushed about 3,600 px down. On mobile, where the panel is a fixed overlay, it was unreachable. The panel now has a bounded height with a `min-h-0` chain.
+  - **The controls overflowed on a 390 px phone.** Their spacing is tighter on small screens now.
+  - **End before Start** showed "Mission Accomplished" for an interview that never ran. End is now disabled until the interview has started.
+  - If speech recognition isn't supported (Firefox), the transcript opens automatically so the candidate can type.
+
+**Proof**
+- `lint`, `typecheck`, `test` (23 pass, 1 skipped parity test that needs the Python fixture) and `build` all pass.
+- **API end to end: 24/24.**
+  - ai-chat before start → 409. The welcome is saved.
+  - An answer with injected `conversationHistory`/`knowledgeBase`: the prompt contains the server transcript and none of the injected text.
+  - The transcript is stored in order (`interviewer, user, interviewer, interviewer:nudge`) with unique ids and rounded timing.
+  - A repeated START gives `resumed`, and nothing new is saved.
+  - A refresh keeps the same `startTime` and returns the transcript.
+  - AI down → 503, and the answer is still saved (a 1e12 ms duration is clamped to 10 min).
+  - A 5,000-char message is cut to 2,000. Another guest gets 404. `add_message` gives 400. The 61st message gives `409 message_limit`.
+  - end → client metrics are ignored, the server's are computed (`userSpeakingTime` = sum of durations), and junk face fields are dropped.
+  - ai-chat after end → 409.
+  - A stale interview auto-closes with `totalDuration` 180000 and `wordsPerMinute` 80.
+- **Browser, real component: 30/30 checks in 8 scenarios**, covering everything above. Run against the **old** code, the same harness fails. For example, it sent `"hello world hello world"` to the AI.
+- **Layout (measured):**
+  - Desktop: the page is exactly 800 px tall, Start is at y=432, and the transcript scrolls inside a 508 px panel.
+  - Phone (390 px): no horizontal overflow, Start is at y=260, and the answer box is visible with the panel open.
+
+**Not verified here:** real Chrome speech recognition and a real camera. The harness fakes their events in the same shape and order as the browser APIs. Please do one real interview in Chrome.

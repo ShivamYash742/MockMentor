@@ -4,6 +4,7 @@ import Interview from '@/lib/models/Interview';
 import InterviewSession from '@/lib/models/InterviewSession';
 import { GRACE_MS, interviewEndTime } from '@/lib/interviewWindow';
 import { findOwned, getRequester } from '@/lib/requester';
+import { closeSession } from '@/lib/sessionLifecycle';
 
 export async function GET(
   req: NextRequest,
@@ -36,12 +37,10 @@ export async function GET(
         interview.endDateTime = endTime;
         await interview.save();
         // Older in-progress interviews have no session (the page used to start them on load).
-        if (interview.sessionId) {
-          await InterviewSession.updateOne(
-            { _id: interview.sessionId, status: 'active' },
-            { status: 'completed', endTime }
-          );
-        }
+        const session = interview.sessionId
+          ? await InterviewSession.findOne({ _id: interview.sessionId, status: 'active' })
+          : null;
+        if (session) await closeSession(session, endTime);
       }
     }
 
