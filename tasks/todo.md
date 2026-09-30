@@ -1068,6 +1068,8 @@ Phase 0 → 1 → 2 → 3 → 4 (optional) → 5. That's about **8–12 working 
 ## Revised desktop plan, with your decisions (2026-09-30)
 
 > **Status: plan only, no code changed.** Waiting for the Vercel URL and your go-ahead to start Phase 0.
+>
+> **Full build guide:** [`DESKTOP_APP_PLAN.md`](../DESKTOP_APP_PLAN.md). It has every file's code, the commands, the tests, troubleshooting and a progress checklist, so the app can be built without help. This section is the short version.
 
 ### Your decisions
 | Question | Your answer | What it changes |
