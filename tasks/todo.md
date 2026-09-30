@@ -958,3 +958,109 @@ The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq
   - moving the camera and HUD into their own component (the page re-renders at 10 Hz). Deferred again, because nothing measured shows a problem;
   - an int8 or self-hosted emotion model for faster first loads.
 - **Needs you:** one real interview in Chrome with real keys (real speech recognition, camera and Clerk sign-in), and the duplicate check above before deploying over existing data.
+
+---
+
+## Plan: MockMentor as a desktop app on Windows and Linux (2026-09-30)
+
+> **Status: plan only, no code changed.** Waiting for your answers to the questions at the end, and your go-ahead.
+
+### The short version
+Build a small **Electron** app that opens the hosted MockMentor website in its own window, the way Slack, Discord and Notion desktop apps work. Ship it as a Windows installer and as Linux AppImage and `.deb` packages, updating itself from GitHub Releases. Two changes to the web app make voice work inside it:
+- speech-to-text through **Groq Whisper**;
+- **on-screen captions** when the computer has no text-to-speech voices.
+
+A quick win comes first: making the site installable as an app from Chrome or Edge (a PWA).
+
+### What shapes the design (what I checked)
+1. **The server's secrets can't go into an installer.** The API routes need `MONGODB_URI`, `GROQ_API_KEY`, `CLERK_SECRET_KEY` and `APPWRITE_API_KEY`, and anything inside an installer can be extracted. So the desktop app must not run the Next.js server on the user's machine. It's a window onto the deployed site, and the server stays in the cloud. A bonus: every web fix reaches desktop users immediately, without a new installer.
+2. **Voice input depends on a speech service the desktop engines don't include.** `SpeechRecognition` in Chrome sends audio to Google, and in Edge to Microsoft. Electron embeds open-source Chromium, which lacks that service, and Tauri's system webviews don't offer it either.
+   - Here, open-source Chromium (the same kind of build Electron uses) exposed the API. In headless mode, starting it produced **no events at all** in 8 seconds. In a headed window it stopped at "no microphone", because this container has none.
+   - So this isn't proven yet. Phase 0 checks it on real machines.
+   - The fix works either way: **Groq Whisper** (`whisper-large-v3-turbo`) transcribes on the server. The installed `@ai-sdk/groq` already supports it (checked), with the same API key and no new dependency.
+3. **Voice output depends on the computer's voices.** Windows has built-in voices. Linux often has none unless `speech-dispatcher` is installed. Tested here: 0 voices, and `speak()` fails at once with `synthesis-failed`. The app already carries on when that happens (it doesn't hang), but the interviewer is silent. So there's a captions fallback, and the `.deb` package depends on `speech-dispatcher`.
+4. **Sign-in:**
+   - Clerk's production setup needs the real domain. Loading the hosted site keeps that working.
+   - Google blocks its sign-in page inside app windows ("This browser or app may not be secure"). So Google sign-in has to happen in the system browser, which then hands the session back to the app through a `mockmentor://` link.
+   - Email sign-in and guest mode work inside the window as they are.
+5. **Camera and machine learning:** camera access, WebGL, WebAssembly and Web Workers all work in Electron's Chromium. That's the same engine every browser check this session ran on. The face and emotion models load from CDNs, so an internet connection is needed. Self-hosting the model files is a later improvement.
+
+### Options considered
+| Option | Download size | For | Against | Verdict |
+|---|---|---|---|---|
+| **Installable web app (PWA)** from Chrome or Edge | none | Free, works today; voice works because it uses the browser's own speech service | Needs Chrome or Edge; no installer or auto-update of its own | **Phase 1, the quick win** |
+| **Electron** app | ~90–110 MB | One bundled Chromium, so one engine to test on both systems; mature installers, auto-update, deep links; Playwright can drive it for tests | Large download; no built-in speech recognition (fixed by Phase 2) | **Recommended** |
+| **Tauri** app | ~5–15 MB | Much smaller | Uses each system's own web engine: WebView2 on Windows, WebKitGTK on Linux. WebKitGTK's camera, WebGL and WebAssembly support varies by distribution, and the camera plus emotion model is the core feature. Two engines means twice the risk | Not now |
+| Run the server inside the app | large | Could work partly offline | Puts the server's secrets on every user's machine, and still needs the internet for Groq and MongoDB | Rejected |
+
+### Phases
+**Phase 0: spike on real machines (0.5–1 day).** A minimal Electron window loading the deployed site, run on one Windows PC and one Linux PC. Check the camera, the microphone, speech recognition (expected to fail), the available voices, face tracking, the emotion model, email sign-in and guest mode. The output is a results checklist here. I build it; you, or a CI runner, run it.
+
+**Phase 1: installable web app (about half a day).**
+- Add `app/manifest.ts`: name, icons (192, 512 and maskable), `start_url: /interview/new`, standalone display, and theme colours.
+- Make the icons from the existing artwork.
+- Add a small service worker whose only job is an offline page. API calls are never cached.
+- Add an "Install app" button on the landing page, shown only where the browser offers installation.
+- **Result:** on Windows or Linux, Chrome and Edge users get MockMentor in its own window, with a taskbar or dock icon and a Start menu or app launcher entry. Voice works as it does in the browser today.
+- **Verify:** the manifest is served, and headless Chromium reports the site as installable.
+
+**Phase 2: voice that doesn't depend on the browser (2–3 days).**
+- **A new `/api/transcribe` endpoint.** It takes one recorded answer (WebM/Opus, at most 60 s and 2 MB) and sends it to Groq Whisper. It gets the same sign-in checks and rate limits as the other AI routes, plus an audio budget.
+- **A "cloud" engine in `hooks/useSpeechToText.ts`.** It records with `MediaRecorder` and uses the Web Audio API's volume level to detect speech. It keeps the same rules (a 3 s pause ends an answer, a 10 s silence gets a check-in) and the same real timing, then uploads when the candidate pauses. It has the same interface as today, so `useVoiceInterview` and the interview page barely change.
+- **Which engine runs:**
+  - the browser's own recognition when it exists and works;
+  - the cloud engine when it's missing, when it fails with `network` or `service-not-allowed`, when it doesn't start within 3 s, and always inside the desktop app;
+  - a setting can force either one.
+- **While speaking,** the cloud engine shows a level meter and "Recording…" instead of live words. Whisper transcribes after the pause.
+- **Captions:** when there are no voices, or speaking fails, the interviewer's words appear on screen and the transcript opens. A "captions always on" option helps accessibility.
+- This also fixes voice input in Firefox and Safari, which today can only type.
+- **Cost:** Whisper is billed per hour of audio. A 3-minute interview is a tiny fraction of a cent at Groq's published rates (check current pricing).
+- **Verify:**
+  - unit tests for the speech-detection logic;
+  - the fake Groq server gains a transcription endpoint;
+  - browser scenarios feed a recorded WAV file as the microphone (`--use-file-for-fake-audio-capture`) and follow a spoken answer through Whisper to the AI reply.
+
+**Phase 3: the Electron app (3–4 days).**
+- **A new `desktop/` folder** with its own `package.json` (Electron plus `electron-builder`). The web app's dependencies don't change.
+- **Main process:**
+  - one window loading the production URL, which is set at build time and can be overridden for testing;
+  - a persistent session, so sign-in and the guest id survive restarts;
+  - locked down: context isolation, sandbox, no Node.js in the page. A tiny preload only tells the page it's in the desktop app, and which version;
+  - navigation limited to the app's domain and Clerk's. Any other link opens in the default browser;
+  - camera and microphone allowed only for the app's own site, everything else refused;
+  - an offline page with a Retry button when the site can't be reached;
+  - a single instance (a second launch focuses the window);
+  - the window's size and position remembered;
+  - a small menu: Reload, Zoom, Full screen, About, Check for updates.
+- **The web app notices it's inside the desktop app.** It then uses the cloud speech engine and hides the "Install app" button.
+- **Packages:**
+  - Windows: an NSIS installer (per-user, with Start menu and desktop shortcuts and an uninstaller), and optionally a portable `.exe`;
+  - Linux: an AppImage (runs on any distribution) and a `.deb` for Ubuntu and Debian (depends on `speech-dispatcher` for voices). `.rpm` can come later.
+- **Auto-update:** `electron-updater` pulls from GitHub Releases. This covers the Windows installer and the AppImage. `.deb` users download new versions, or use an apt repository later.
+- **Verify:**
+  - build the Linux packages here and drive the app under a virtual display with Playwright's Electron support, against a local server: the window loads, other sites are blocked, permissions are limited, the offline page works, and links open externally;
+  - a CI job builds the Windows version and runs a launch smoke test;
+  - you do the final hands-on check.
+
+**Phase 4: Google sign-in from the desktop app (1–2 days, optional).**
+- "Sign in" in the app opens the system browser at `/desktop/sign-in?state=<random>`.
+- After the normal Clerk sign-in there, the server creates a one-time Clerk sign-in token (single use, 60 s) and redirects to `mockmentor://auth?ticket=…&state=…`.
+- The app is registered for `mockmentor://` on Windows and Linux. It checks `state`, then signs its own window in with the ticket.
+- This phase can wait if email sign-in and guest mode are enough for the first release.
+
+**Phase 5: releases and downloads (1–2 days, plus time to get a certificate).**
+- **CI:** on a version tag, GitHub Actions builds the Windows packages (`windows-latest`) and the Linux packages (`ubuntu-latest`), runs the smoke tests, and publishes a GitHub Release with checksums.
+- **Windows signing:** an unsigned installer shows SmartScreen's "Windows protected your PC" warning. The options are Azure Trusted Signing (a monthly fee, with eligibility rules) or an OV code-signing certificate (yearly). Shipping unsigned first is possible: users click "More info → Run anyway".
+- **A download section on the site** that detects Windows or Linux and links the latest release.
+- **Docs:** install steps and troubleshooting. That covers camera and microphone access in Windows privacy settings, `speech-dispatcher` on Linux, and Wayland notes.
+
+### Order and effort
+Phase 0 → 1 → 2 → 3 → 4 (optional) → 5. That's about **8–12 working days** in total, plus time to get a certificate. Every phase leaves the web app shippable, and the website keeps working exactly as today in browsers. The Python sidecar isn't part of the desktop app, since face tracking already runs in the page.
+
+### Questions for you
+1. **Production URL:** where is the web app deployed, or where will it be? The desktop app loads it, and Clerk must be a production instance on that domain.
+2. **Order:** start with the PWA (Phase 1), or go straight to Electron?
+3. **Speech recognition in normal browsers:** keep Chrome's and Edge's built-in recognition (free, shows live words) with Whisper only as the fallback *(recommended)*, or use Whisper everywhere (consistent everywhere, small cost)?
+4. **Windows signing:** ship unsigned first, or get a certificate now?
+5. **Linux formats:** AppImage and `.deb` *(recommended)*, or also `.rpm`, Flatpak or Snap?
+6. **Google sign-in in the desktop app:** needed for the first release (Phase 4), or later?
