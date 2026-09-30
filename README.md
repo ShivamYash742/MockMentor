@@ -38,6 +38,15 @@ camera ──► MediaPipe face landmarks (10 fps)
 - **Secured API** — every route checks who owns the interview; the AI chat endpoint builds its prompt on the server and is limited to active interviews; resume uploads are validated before storage.
 - **Better live experience** — typed answers (also works in Firefox), a real mute button, a silence nudge, on-screen gaze reminders, and clear camera/microphone error messages.
 
+### Since v2.0 (reliability and safety pass)
+
+- **The server keeps the transcript** — `/api/ai-chat` stores each answer and reply in order; a page refresh restores the interview and repeats the last question.
+- **Live interview fixes** — spoken answers are no longer doubled, turning the camera off really turns it off, pause holds, typed answers aren't lost while the interviewer is replying, and the transcript scrolls.
+- **Fairer, sturdier reports** — camera stats cover the whole interview, typed answers aren't penalized as silence, the rubric's hard caps are enforced in code, and interviews with no answers aren't sent to the AI.
+- **Limits** — per-user and per-IP rate limits on the AI and on new guests, capped input sizes, and one-interview-per-guest checked before any work.
+- **Database indexes actually build** — the unique indexes behind "one session / one report per interview" were silently never created.
+- **Accessible, phone-friendly UI** — labelled controls, keyboard-friendly mentor picker, light and dark report themes, layouts that fit a 390 px screen.
+
 ---
 
 ## 🔄 Workflow
@@ -46,7 +55,7 @@ camera ──► MediaPipe face landmarks (10 fps)
 flowchart TD
     A["🏠 Landing Page"] --> B["🔐 Sign in (Clerk) or continue as guest"]
     B --> C["📄 Step 1: Upload resume (PDF/TXT) or paste text"]
-    C -->|"File stored in Appwrite"| D["🤖 Groq summarizes resume"]
+    C -->|"File kept in Appwrite (signed-in users)"| D["🤖 Groq summarizes resume"]
     D --> E["💼 Step 2: Job title + description"]
     E --> F["🤖 Groq summarizes the role"]
     F --> G["👤 Step 3: Choose AI mentor persona"]
@@ -102,12 +111,14 @@ Open **`/emotion-demo`** — a public page (no sign-in) where anyone can turn on
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | [Clerk](https://clerk.com/) | Authentication (client) | ✅ |
 | `CLERK_SECRET_KEY` | Clerk | Authentication (server middleware) | ✅ |
 | `GROQ_API_KEY` | [Groq](https://groq.com/) | All AI: resume/job summaries, interview conversation, report generation | ✅ |
-| `NEXT_PUBLIC_APPWRITE_ENDPOINT` | [Appwrite](https://appwrite.io/) | Resume file storage | ✅ |
-| `NEXT_PUBLIC_APPWRITE_PROJECT_ID` | Appwrite | Your Appwrite project | ✅ |
-| `NEXT_PUBLIC_BUCKET_ID` | Appwrite | Storage bucket for resumes | ✅ |
-| `APPWRITE_API_KEY` | Appwrite | Server-side uploads | ✅ |
+| `NEXT_PUBLIC_APPWRITE_ENDPOINT` | [Appwrite](https://appwrite.io/) | Resume file storage (signed-in users' latest resume) | For signed-in uploads |
+| `NEXT_PUBLIC_APPWRITE_PROJECT_ID` | Appwrite | Your Appwrite project | For signed-in uploads |
+| `NEXT_PUBLIC_BUCKET_ID` | Appwrite | Storage bucket for resumes | For signed-in uploads |
+| `APPWRITE_API_KEY` | Appwrite | Server-side uploads | For signed-in uploads |
+| `NEXT_PUBLIC_SITE_URL` | — | Absolute URL for social preview images | Recommended |
+| `GROQ_BASE_URL` | — | Send Groq requests to another OpenAI-compatible URL (a proxy, or a local mock in tests) | No |
 
-No key is needed for face tracking or the emotion model — they run in the browser.
+No key is needed for face tracking or the emotion model — they run in the browser. Guests' resume files are never stored; only the summary is used.
 
 ### Which AI does what?
 
@@ -156,13 +167,13 @@ MockMentor/
 │   ├── (dev)/                      # /test-face, /test-speech — dev-only debug pages
 │   └── api/
 │       ├── auth/guest/             # Create / reuse a guest identity
-│       ├── upload-resume/          # Validate + store resume, summarize
+│       ├── upload-resume/          # Validate + summarize (keeps a signed-in user's latest file)
 │       ├── process-resume/         # Summarize pasted resume text
 │       ├── process-job/            # Summarize the role
 │       ├── create-interview/       # Create interview (atomic guest limit)
 │       ├── interview/[id]/         # Fetch interview (auto-closes abandoned ones)
-│       ├── interview-session/      # Start / add message / end
-│       ├── ai-chat/                # Interviewer replies (server-built prompt)
+│       ├── interview-session/      # Start (returns the transcript so far) / end
+│       ├── ai-chat/                # Interviewer replies; stores the transcript
 │       ├── generate-report/        # AI report (503 + retry on failure)
 │       ├── report/[id]/            # Read a saved report
 │       └── user-profile/           # Signed-in user profile
@@ -181,6 +192,11 @@ MockMentor/
 │   ├── emotionModel.ts             # ONNX emotion model (browser)
 │   ├── faceAnalysis.ts             # Blink / gaze / pose / stress math
 │   ├── speechMetrics.ts            # Real speaking time, WPM, pauses, fillers
+│   ├── speechAnswer.ts             # Builds one spoken answer from recognizer events
+│   ├── sessionLifecycle.ts         # Closing a session: metrics from the stored transcript
+│   ├── reportRules.ts              # Rubric caps enforced after generation
+│   ├── rateLimit.ts                # MongoDB-backed rate limits (+ clientIp.ts)
+│   ├── inputLimits.ts              # Size limits shared by UI and API
 │   ├── reportSchema.ts             # zod schema for AI reports
 │   ├── groq.ts                     # Groq client with model fallback
 │   ├── requester.ts                # Who is calling + ownership checks
@@ -234,13 +250,31 @@ Open [http://localhost:3000](http://localhost:3000). Voice works best in Chrome 
 | `npm run typecheck` | TypeScript (`tsc --noEmit`) |
 | `npm test` | Unit tests (`node --test`) |
 
+### Limits
+
+Set in `lib/rateLimit.ts` and `lib/inputLimits.ts` (counters live in MongoDB and expire on their own):
+
+| Limit | Value |
+|---|---|
+| New guest sessions per IP | 20 / hour |
+| AI calls per user or guest | 100 / hour |
+| AI calls per IP | 600 / hour (generous, for shared classroom/office IPs) |
+| Interviews per signed-in user | 20 / day (guests: 1 in total) |
+| Messages per interview | 60 |
+| Resume | PDF or TXT, 5 MB, 20,000 characters of text |
+| Job title / description | 200 / 10,000 characters |
+
+The client IP is read from `x-real-ip` or the last `x-forwarded-for` entry, which works behind Vercel, Render, or nginx.
+
 ---
 
 ## 🚀 Deployment
 
 Deploy the Next.js app anywhere that runs Next.js (e.g. Vercel) with the environment variables above. **Nothing else needs to be deployed** — there is no ML service.
 
-> `render.yaml` and `model/render.yaml` still describe the old Python sidecar. They are no longer needed; if a Render service was created from them, it can be suspended or deleted.
+> **Before deploying over an existing database:** the unique indexes on `interviewsessions.interviewId` and `interviewreports.interviewId` are now actually created at startup. If older data has duplicates, that index build fails (it's logged; requests keep working). Check with `db.interviewreports.aggregate([{$group:{_id:"$interviewId",n:{$sum:1}}},{$match:{n:{$gt:1}}}])`, and the same for `interviewsessions`.
+
+> `render.yaml` and `model/render.yaml` still describe the old Python sidecar. The app doesn't need it. If you do deploy it, Render generates an `ML_ACCESS_TOKEN`; clients must connect to `/ws/<id>?token=<value>`.
 
 ---
 
@@ -252,10 +286,11 @@ Deploy the Next.js app anywhere that runs Next.js (e.g. Vercel) with the environ
 cd model
 python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python test_pipeline.py   # self-check; also writes the fixture used by the browser parity test
+.venv/bin/python test_server.py     # per-connection isolation, access token, bad frames, responsiveness
 .venv/bin/python new.py             # local webcam debug viewer (ESC to quit)
 ```
 
-Model files are downloaded automatically on first run into `model/models/` (gitignored).
+Model files are downloaded automatically on first run into `model/models/` (gitignored). Outside Docker, MediaPipe needs the GL libraries the `Dockerfile` installs, and `LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=swrast EGL_PLATFORM=surfaceless` on a machine without a GPU. CI runs both test files, then the browser parity test against their output.
 
 ---
 
@@ -300,11 +335,12 @@ All prompts live in `lib/prompts.json` — resume and job summaries, the intervi
 | **1** | `hooks/useFaceTracker.ts` + `lib/emotionModel.ts` | In-browser CV pipeline: MediaPipe, periodic emotion sampling, Web Worker inference, graceful fallback |
 | **2** | `lib/emotionModel.test.ts` + `model/test_pipeline.py` | How the browser model is proven to match the Python reference on labelled faces |
 | **3** | `hooks/useSpeechToText.ts` | Browser STT with pause detection, a total-silence watchdog, and real per-answer timing |
-| **4** | `app/api/ai-chat/route.ts` | Server-built prompts, ownership + time-window checks, honest failure handling |
+| **4** | `app/api/ai-chat/route.ts` | Server-built prompts, the server-kept transcript, ownership + time-window checks, rate limits, honest failure handling |
 | **5** | `app/api/generate-report/route.ts` + `lib/reportSchema.ts` | Structured, schema-validated reports; 503 instead of a fabricated fallback |
 | **6** | `lib/requester.ts` | One place for identity and ownership (users and guests) |
 | **7** | `lib/prompts.json` | AI behavior decoupled from code — personas and the scoring rubric |
 | **8** | `lib/speechMetrics.ts` | Real speaking time, WPM, pauses, and filler-word counting |
+| **9** | `lib/reportRules.ts` + `lib/rateLimit.ts` | Rubric caps enforced in code; MongoDB-backed rate limits |
 
 > Notes in `docs/` are historical and partly describe the v1 architecture (Gemini, the Render sidecar). `tasks/todo.md` is the up-to-date record of the v2 changes.
 

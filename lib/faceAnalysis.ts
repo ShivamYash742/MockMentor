@@ -528,17 +528,15 @@ export function aggregateSession(frames: FrameData[]): AggregatedSummary {
 
   const emotionKeys = ['happy', 'sad', 'angry', 'surprised', 'fear', 'disgust', 'neutral'] as const;
 
-  function avg(key: string, sub?: string): number {
+  function avg(pick: (f: FrameData) => number | undefined): number {
     let sum = 0;
-    for (const f of frames) {
-      sum += sub ? (f[sub]?.[key] ?? 0) : (f[key] ?? 0);
-    }
+    for (const f of frames) sum += pick(f) ?? 0;
     return sum / n;
   }
 
   const emotionsAvg: EmotionScores = {} as EmotionScores;
   for (const k of emotionKeys) {
-    emotionsAvg[k] = Math.round(avg(k, 'emotions') * 10000) / 10000;
+    emotionsAvg[k] = Math.round(avg((f) => f.emotions?.[k]) * 10000) / 10000;
   }
 
   // Dominant histogram
@@ -562,11 +560,11 @@ export function aggregateSession(frames: FrameData[]): AggregatedSummary {
     frame_count: n,
     emotions_avg: emotionsAvg,
     dominant_histogram: dominantHistogram,
-    stress_avg: Math.round(avg('stress_score') * 10000) / 10000,
+    stress_avg: Math.round(avg((f) => f.stress_score) * 10000) / 10000,
     stress_peak: Math.round(Math.max(...frames.map(f => f.stress_score ?? 0)) * 1000) / 1000,
-    engagement_avg: Math.round(avg('engagement') * 10000) / 10000,
-    confidence_avg: Math.round(avg('confidence') * 10000) / 10000,
-    attention_avg: Math.round(avg('attention') * 10000) / 10000,
+    engagement_avg: Math.round(avg((f) => f.engagement) * 10000) / 10000,
+    confidence_avg: Math.round(avg((f) => f.confidence) * 10000) / 10000,
+    attention_avg: Math.round(avg((f) => f.attention) * 10000) / 10000,
     attention_on_screen_frac: Math.round(lookFrac * 1000) / 1000,
     total_blinks: totalBlinks,
     // Blinks over the whole window. Averaging each frame's running rate (as this used to) is

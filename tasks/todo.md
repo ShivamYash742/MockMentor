@@ -558,7 +558,7 @@ Two commits: (1) the `model/` upgrade already done, (2) this integration. Tell m
 
 ## Audit #2 — bugs and upgrade ideas (2026-09-30)
 
-> **Status: you said go (2026-09-30): "work on them one by one, nothing should be left". Working through Steps 6–10 in order, one commit per step. Reviews are at the end of this section.**
+> **Status: Steps 6–10 done ✅ (2026-09-30).** Every bug in A–D is fixed and verified, plus 13 more found while verifying. The product ideas in E are the remaining backlog; see "What's left" at the end.
 
 I read every source file again after the v2.0.0 release. Baseline: `lint`, `typecheck` and `test` (18 pass, 1 skipped) all pass, and `npm audit` reports 0 vulnerabilities. Items marked **(verified)** were reproduced. Everything else comes from reading the code, with the exact line.
 
@@ -683,7 +683,7 @@ How I verified: I ran the real `useSpeechToText` hook, an exact copy of the came
 - [x] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
 - [x] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
 - [x] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
-- [ ] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
+- [x] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
 - The ideas in E stay a backlog until you choose some.
 
 ### How each step is verified
@@ -891,3 +891,70 @@ The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq
   - Against the **old** server, two users at once (happy face, angry face) both came back "happy". The second user got the first user's reading.
 
 **Note:** running the sidecar outside Docker needs the GL libraries its Dockerfile installs, plus `LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=swrast EGL_PLATFORM=surfaceless`.
+
+### Review — Step 10: polish, cleanup and tests (2026-09-30)
+**What changed**
+- **TypeScript `strict` is on.** It showed only 5 errors, each fixed properly:
+  - `getMentorById` now accepts a missing id;
+  - `aggregateSession`'s untyped average helper is typed;
+  - `pdf2json`'s error-callback type is matched.
+- **React strict mode is on** (development only). All 9 interview scenarios pass with and without it. The camera check is now stricter: exactly one live stream at any time, and every stream ended after camera-off and after unmount.
+- **The report page follows the theme.** It hardcoded a black background and slate text, but used theme colours for its cards and gradients. In light mode that meant a white band across the header and light-grey text on a white card (checked in a screenshot). About 45 colour classes were mapped to theme tokens. Dark mode looks the same as before, light mode is now a normal light report, and there's no overflow at 390 px.
+- **The missing animations are defined:** `blob`, `shine`, `animation-delay-*` and `direction-reverse`, respecting `prefers-reduced-motion`.
+- **Bryan's mentor id** no longer has a leading space. Old interviews still match, because `getMentorById` trims.
+- **Stale references removed:** the `/api/guest/interview-count` route in the middleware, the `.env.local` hints, and the dead `ML_BASE_URL`/`ML_WS_BASE` exports.
+- **Correction to my audit:** the two identical `InferenceSession.create` branches aren't dead code. TypeScript can't choose between the URL and bytes overloads for a union argument, so a single call fails to compile (checked). The code stays, with a comment explaining why.
+- **Added:**
+  - `app/error.tsx` and `app/not-found.tsx` (the real server returns a 404 with the new page);
+  - `'use client'` on the completion screen;
+  - `metadataBase` from `NEXT_PUBLIC_SITE_URL`, which silences the build warning;
+  - an "Emotion Demo" link in the footer (the page wasn't linked from anywhere);
+  - a note before the interview starts that camera video stays in the browser.
+- **Tests:**
+  - `lib/clientIp.ts` was split out of the rate limiter so it can be tested, with 3 tests;
+  - `lib/sessionLifecycle.test.ts` has 3 tests covering metrics from the transcript, timing clamps, and `closeSession`.
+- **CI:**
+  - the main job now also runs `next build` with placeholder keys;
+  - a new `sidecar` job installs the GL libraries, runs `test_pipeline.py` and `test_server.py`, then runs the browser parity test against their output. That test used to always skip in CI.
+- **Docs:** the README covers the "since v2.0" changes, the limits table, the new environment variables, the index check before deploying over an existing database, the sidecar token and tests, and the updated file map.
+
+**Proof (final full run)**
+- `lint`, `typecheck` (strict) and `build` pass. **`test`: 39/39, 0 skipped.**
+- **API:** Step 6 25/25, Step 7 28/28, Step 8 6/6, Step 9 23/23.
+- **Browser:**
+  - interview 9 scenarios, plus the same 9 under React strict mode;
+  - setup page 21/21;
+  - report and completion screens 9/9;
+  - interview error card 4/4.
+- **Sidecar:** `test_pipeline.py` 3/3 and `test_server.py` 2/2 (72 ms per frame; `/api/health` worst 7 ms under load).
+
+### Found while verifying (not in the audit)
+1. The unique indexes were never built (`bufferCommands: false`). Two reports were saved for one interview in a race. **The most important find.**
+2. The Start button was pushed below the fold by a full-screen placeholder.
+3. The transcript panel grew with the page instead of scrolling, which put the answer box off-screen (unreachable on mobile).
+4. The controls, the setup page and the navbar overflowed a 390 px phone.
+5. End before Start showed "Mission Accomplished" for an interview that never ran.
+6. Typed-only candidates (e.g. Firefox) were told "Speaking Time: 0 seconds" and penalised −15.
+7. The mentor step had no Back button.
+8. Drag and drop was advertised but not implemented.
+9. Back/Next re-sent unchanged input to the AI and re-uploaded the file.
+10. Rate limiting by IP would have put all no-proxy and loopback traffic into one shared bucket.
+11. The sidecar grew `sys.path` on every frame.
+12. `test_pipeline.py` failed on a fresh checkout.
+13. The report page was unreadable in light mode.
+
+### What's left (backlog, by choice rather than oversight)
+- **Product features from E, which you haven't picked yet:**
+  - an interview-history dashboard with score trends;
+  - Whisper speech-to-text;
+  - streaming replies;
+  - configurable length and interview modes;
+  - PDF export and share links;
+  - moving a guest's interview into their account on sign-up;
+  - `.docx` resumes;
+  - "delete my data".
+- **Major upgrades** (Next 16, Clerk 7, `ai` 7, Mongoose 9, zod 4, `@mediapipe/tasks-vision` 1.0). Each is a breaking change. Clerk in particular can't be verified here without real keys, so these are worth a dedicated step.
+- **Performance:**
+  - moving the camera and HUD into their own component (the page re-renders at 10 Hz). Deferred again, because nothing measured shows a problem;
+  - an int8 or self-hosted emotion model for faster first loads.
+- **Needs you:** one real interview in Chrome with real keys (real speech recognition, camera and Clerk sign-in), and the duplicate check above before deploying over existing data.

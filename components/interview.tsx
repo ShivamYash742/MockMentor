@@ -390,6 +390,10 @@ const Interview = ({
                       <Phone className="w-4 h-4 mr-2" /> {starting ? 'Starting...' : 'Start Interview'}
                     </Button>
                     {startError && <p role="alert" className="text-sm text-destructive">{startError}</p>}
+                    <p className="max-w-xs text-center text-xs text-muted-foreground">
+                      Your camera video stays in your browser. Only summary numbers, like average
+                      stress and eye contact, are saved with your report.
+                    </p>
                   </>
                 ) : (
                   <h3 className="text-xl font-medium tracking-wide" aria-live="polite">

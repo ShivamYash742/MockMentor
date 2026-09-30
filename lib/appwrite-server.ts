@@ -12,25 +12,25 @@ const apiKey = process.env.APPWRITE_API_KEY;
 
 if (!endpoint) {
   throw new Error(
-    'Missing NEXT_PUBLIC_APPWRITE_ENDPOINT. Set it in .env.local.'
+    'Missing NEXT_PUBLIC_APPWRITE_ENDPOINT. Set it in .env.'
   );
 }
 
 if (!projectId) {
   throw new Error(
-    'Missing NEXT_PUBLIC_APPWRITE_PROJECT_ID. Set it in .env.local.'
+    'Missing NEXT_PUBLIC_APPWRITE_PROJECT_ID. Set it in .env.'
   );
 }
 
 if (!bucketId) {
   throw new Error(
-    'Missing NEXT_PUBLIC_BUCKET_ID (Appwrite Storage Bucket ID). Set it in .env.local.'
+    'Missing NEXT_PUBLIC_BUCKET_ID (Appwrite Storage Bucket ID). Set it in .env.'
   );
 }
 
 if (!apiKey) {
   throw new Error(
-    'Missing APPWRITE_API_KEY. Create an API key in your Appwrite Console → Settings → API Keys, and add it to .env.local.'
+    'Missing APPWRITE_API_KEY. Create an API key in your Appwrite Console → Settings → API Keys, and add it to .env.'
   );
 }
 

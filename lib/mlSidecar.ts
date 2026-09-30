@@ -1,12 +1,5 @@
-// ML sidecar types — used by frontend components.
-// The face tracking now runs CLIENT-SIDE via @mediapipe/tasks-vision.
-// The external Python sidecar server is no longer needed.
-
-// Keep for backward compatibility — no longer imported by useFaceTracker.
-// @deprecated Face tracking now runs directly in the browser.
-export const ML_BASE_URL = '';
-/** @deprecated Face tracking now runs directly in the browser. */
-export const ML_WS_BASE = '';
+// Face-tracking result types, shared by the browser tracker (hooks/useFaceTracker.ts) and its UI.
+// The shape matches the Python sidecar's output (model/schema.py), which is where it came from.
 
 export interface FaceEmotions {
   happy: number;

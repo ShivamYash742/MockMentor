@@ -222,7 +222,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-slate-200 selection:bg-primary/30">
+    <div className="min-h-screen bg-background text-foreground selection:bg-primary/30">
       
       {/* Dynamic Header Background */}
       <div className="absolute top-0 inset-x-0 h-96 bg-gradient-to-b from-primary/10 via-background to-transparent pointer-events-none" />
@@ -235,11 +235,11 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
             <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20 backdrop-blur-sm px-3 py-1 text-xs">
               AI Intelligence Report
             </Badge>
-            <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-slate-100">
+            <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-foreground">
               {report.jobTitle}
             </h1>
-            <p className="text-lg text-slate-400 font-medium">
-              Evaluated by <span className="text-slate-200">{report.mentorName}</span>
+            <p className="text-lg text-muted-foreground font-medium">
+              Evaluated by <span className="text-foreground">{report.mentorName}</span>
             </p>
           </div>
           
@@ -271,7 +271,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">{item.label}</p>
-                  <p className="text-base font-medium text-slate-200 mt-0.5">{item.value}</p>
+                  <p className="text-base font-medium text-foreground mt-0.5">{item.value}</p>
                 </div>
               </CardContent>
             </Card>
@@ -280,7 +280,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
 
         {/* Executive Summary & Strengths */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <Card className="lg:col-span-2 bg-gradient-to-br from-background via-background to-slate-900/50 border-border/40 shadow-xl">
+          <Card className="lg:col-span-2 bg-gradient-to-br from-background via-background to-muted/50 border-border/40 shadow-xl">
             <CardHeader>
               <CardTitle className="flex items-center space-x-2 text-xl">
                 <Brain className="w-5 h-5 text-primary" />
@@ -288,7 +288,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-slate-300 text-lg leading-relaxed font-light">
+              <p className="text-foreground/90 text-lg leading-relaxed font-light">
                 {report.detailedFeedback.summary}
               </p>
             </CardContent>
@@ -308,7 +308,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                 </h4>
                 <ul className="space-y-2">
                   {report.detailedFeedback.keyStrengths.map((strength, index) => (
-                    <li key={index} className="text-sm text-slate-300 flex items-start">
+                    <li key={index} className="text-sm text-foreground/90 flex items-start">
                       <span className="mr-2 text-emerald-500">•</span>
                       <span className="leading-tight">{strength}</span>
                     </li>
@@ -322,7 +322,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                 </h4>
                 <ul className="space-y-2">
                   {report.detailedFeedback.areasForImprovement.map((area, index) => (
-                    <li key={index} className="text-sm text-slate-300 flex items-start">
+                    <li key={index} className="text-sm text-foreground/90 flex items-start">
                       <span className="mr-2 text-amber-500">•</span>
                       <span className="leading-tight">{area}</span>
                     </li>
@@ -335,7 +335,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
 
         {/* Competency Spider/Bars */}
         <div className="space-y-6">
-          <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center">
+          <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center">
             <BarChart3 className="w-6 h-6 mr-3 text-primary" />
             Competency Breakdown
           </h2>
@@ -352,19 +352,19 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
               <Card key={metric.id} className="bg-background/40 border-border/30 group hover:bg-background/60 transition-colors">
                 <CardContent className="p-6">
                   <div className="flex justify-between items-end mb-4">
-                    <h4 className="font-semibold text-lg text-slate-200">{metric.title}</h4>
+                    <h4 className="font-semibold text-lg text-foreground">{metric.title}</h4>
                     <span className={`text-2xl font-black ${getScoreColor(metric.data.score)}`}>
                       {metric.data.score}
                     </span>
                   </div>
                   {/* Custom Progress styling via manual inline styles to inject color easily */}
-                  <div className="h-2.5 w-full bg-slate-800 rounded-full overflow-hidden mb-4">
+                  <div className="h-2.5 w-full bg-muted rounded-full overflow-hidden mb-4">
                     <div
                       className={`h-full rounded-full transition-all duration-1000 ${getProgressColor(metric.data.score)}`}
                       style={{ width: `${metric.data.score}%` }}
                     />
                   </div>
-                  <p className="text-sm text-slate-400 leading-relaxed font-light">
+                  <p className="text-sm text-muted-foreground leading-relaxed font-light">
                     {metric.id === 'conf'
                       ? (metric.data as unknown as { analysis: string }).analysis
                       : metric.id === 'body'
@@ -378,10 +378,10 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
               <Card className="bg-background/40 border-border/30 border-dashed">
                 <CardContent className="p-6">
                   <div className="flex justify-between items-end mb-4">
-                    <h4 className="font-semibold text-lg text-slate-200">Body Language</h4>
-                    <span className="text-sm font-medium text-slate-500">Not assessed</span>
+                    <h4 className="font-semibold text-lg text-foreground">Body Language</h4>
+                    <span className="text-sm font-medium text-muted-foreground">Not assessed</span>
                   </div>
-                  <p className="text-sm text-slate-400 leading-relaxed font-light">
+                  <p className="text-sm text-muted-foreground leading-relaxed font-light">
                     No camera data was captured for this session.
                   </p>
                 </CardContent>
@@ -404,26 +404,26 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
            <CardContent className="relative z-10">
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                <div className="space-y-2">
-                 <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Cognitive Pacing</h4>
-                 <p className="text-sm text-slate-300 leading-relaxed font-medium">
+                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Cognitive Pacing</h4>
+                 <p className="text-sm text-foreground/90 leading-relaxed font-medium">
                    {report.detailedFeedback.behavioralInsights.speechPaceAnalysis}
                  </p>
                </div>
                <div className="space-y-2">
-                 <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Processing Speed</h4>
-                 <p className="text-sm text-slate-300 leading-relaxed font-medium">
+                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Processing Speed</h4>
+                 <p className="text-sm text-foreground/90 leading-relaxed font-medium">
                    {report.detailedFeedback.behavioralInsights.pauseAnalysis}
                  </p>
                </div>
                <div className="space-y-2">
-                 <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Emotional Control</h4>
-                 <p className="text-sm text-slate-300 leading-relaxed font-medium">
+                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Emotional Control</h4>
+                 <p className="text-sm text-foreground/90 leading-relaxed font-medium">
                    {report.detailedFeedback.behavioralInsights.emotionalStateAnalysis}
                  </p>
                </div>
                <div className="space-y-2">
-                 <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Authentic Presence</h4>
-                 <p className="text-sm text-slate-300 leading-relaxed font-medium">
+                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Authentic Presence</h4>
+                 <p className="text-sm text-foreground/90 leading-relaxed font-medium">
                    {report.detailedFeedback.behavioralInsights.confidenceAnalysis}
                  </p>
                </div>
@@ -434,7 +434,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
         {/* Biometric Intelligence — only rendered when the camera produced data */}
         {hasFaceData && (
           <div className="space-y-6">
-            <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center">
+            <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center">
               <Eye className="w-6 h-6 mr-3 text-primary" />
               Biometric Intelligence
             </h2>
@@ -449,14 +449,14 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                     .sort((a, b) => b[1] - a[1])
                     .map(([emotion, score]) => (
                       <div key={emotion} className="flex items-center gap-3">
-                        <span className="text-xs text-slate-400 w-20 capitalize">{emotion}</span>
-                        <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <span className="text-xs text-muted-foreground w-20 capitalize">{emotion}</span>
+                        <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                           <div
                             className="h-full rounded-full bg-primary/80 transition-all duration-700"
                             style={{ width: `${Math.round(score * 100)}%` }}
                           />
                         </div>
-                        <span className="text-xs text-slate-500 w-8 text-right">{Math.round(score * 100)}%</span>
+                        <span className="text-xs text-muted-foreground w-8 text-right">{Math.round(score * 100)}%</span>
                       </div>
                     ))}
                 </CardContent>
@@ -471,19 +471,19 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                 <CardContent className="space-y-3">
                   {signalRows.map(item => (
                     <div key={item.label} className="flex items-center gap-3">
-                      <span className="text-xs text-slate-400 w-20">{item.label}</span>
-                      <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                      <span className="text-xs text-muted-foreground w-20">{item.label}</span>
+                      <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                         <div className={`h-full rounded-full ${item.color}`} style={{ width: `${item.value}%` }} />
                       </div>
-                      <span className="text-xs text-slate-500 w-8 text-right">{item.value}</span>
+                      <span className="text-xs text-muted-foreground w-8 text-right">{item.value}</span>
                     </div>
                   ))}
                   {signalRows.length > 0 && statRows.length > 0 && <Separator className="bg-border/30 my-2" />}
                   <div className="grid grid-cols-2 gap-3 pt-1">
                     {statRows.map(item => (
                       <div key={item.label} className="space-y-0.5">
-                        <p className="text-sm font-semibold text-slate-200">{item.value}</p>
-                        <p className="text-xs text-slate-500">{item.label}</p>
+                        <p className="text-sm font-semibold text-foreground">{item.value}</p>
+                        <p className="text-xs text-muted-foreground">{item.label}</p>
                       </div>
                     ))}
                   </div>
@@ -497,14 +497,14 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
         {/* Q&A Transcripts & Feedback Analysis */}
         {report.detailedFeedback.specificFeedback && report.detailedFeedback.specificFeedback.length > 0 && (
           <div className="space-y-6 pt-10">
-            <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center">
+            <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center">
               <MessageSquareQuote className="w-6 h-6 mr-3 text-primary" />
               Q&A Specific Analysis
             </h2>
             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
               {report.detailedFeedback.specificFeedback.map((qa, index) => (
                 <div key={qa.questionId} className="group relative">
-                  <div className="absolute -inset-y-4 -inset-x-6 z-0 scale-95 opacity-0 transition group-hover:scale-100 group-hover:opacity-100 bg-slate-800/20 rounded-2xl" />
+                  <div className="absolute -inset-y-4 -inset-x-6 z-0 scale-95 opacity-0 transition group-hover:scale-100 group-hover:opacity-100 bg-muted/40 rounded-2xl" />
                   <div className="relative z-10 grid grid-cols-1 md:grid-cols-12 gap-6">
                     {/* Q&A Column */}
                     <div className="md:col-span-8 space-y-4">
@@ -512,24 +512,24 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                         <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0 mt-1 border border-primary/30">
                           <span className="text-primary font-bold text-sm">Q{index + 1}</span>
                         </div>
-                        <p className="text-lg font-medium text-slate-200 leading-relaxed">{qa.question}</p>
+                        <p className="text-lg font-medium text-foreground leading-relaxed">{qa.question}</p>
                       </div>
                       <div className="flex items-start space-x-4 pl-12">
                         <div className="relative w-full">
                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-border rounded-full" />
-                           <p className="text-base text-slate-400 leading-relaxed font-light italic pl-5 py-1">
+                           <p className="text-base text-muted-foreground leading-relaxed font-light italic pl-5 py-1">
                              {qa.userResponse ? <>&quot;{qa.userResponse}&quot;</> : 'No answer given.'}
                            </p>
                         </div>
                       </div>
                     </div>
                     {/* Feedback Column */}
-                    <div className="md:col-span-4 bg-slate-900/50 rounded-xl p-5 border border-border/40 shadow-inner">
+                    <div className="md:col-span-4 bg-muted/50 rounded-xl p-5 border border-border/40 shadow-inner">
                       <div className="flex justify-between items-center mb-3">
-                        <span className="text-xs font-semibold uppercase tracking-widest text-slate-400">Score</span>
+                        <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Score</span>
                         <span className={`text-lg font-black ${getScoreColor(qa.score)}`}>{qa.score}/100</span>
                       </div>
-                      <p className="text-sm text-slate-300 leading-relaxed mb-4">
+                      <p className="text-sm text-foreground/90 leading-relaxed mb-4">
                         {qa.feedback}
                       </p>
                       {qa.suggestions && qa.suggestions.length > 0 && (
@@ -537,7 +537,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                           <span className="text-xs font-semibold uppercase tracking-widest text-primary">Suggestions</span>
                           <ul className="space-y-1">
                             {qa.suggestions.map((sug, idx) => (
-                              <li key={idx} className="text-xs text-slate-400 flex items-start">
+                              <li key={idx} className="text-xs text-muted-foreground flex items-start">
                                 <ArrowRight className="w-3 h-3 mt-0.5 mr-1.5 flex-shrink-0 text-primary opacity-70" />
                                 <span>{sug}</span>
                               </li>
@@ -558,7 +558,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
 
         {/* Tactical Development Plan */}
         <div className="pt-10">
-          <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center mb-6">
+          <h2 className="text-2xl font-bold tracking-tight text-foreground flex items-center mb-6">
             <Star className="w-6 h-6 mr-3 text-amber-500" />
             Tactical Development Plan
           </h2>
@@ -577,7 +577,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                 <CardContent className="pt-5 flex-grow">
                   <ul className="space-y-4">
                     {plan.items.map((rec, index) => (
-                      <li key={index} className="text-sm text-slate-300 flex items-start leading-relaxed">
+                      <li key={index} className="text-sm text-foreground/90 flex items-start leading-relaxed">
                         <span className={`w-1.5 h-1.5 rounded-full mt-1.5 mr-3 flex-shrink-0 bg-current ${plan.color}`} />
                         {rec}
                       </li>
