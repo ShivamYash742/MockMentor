@@ -57,21 +57,21 @@ export default function TestFacePage() {
   const {
     lastFrame,
     isConnected,
-    isSidecarAvailable,
+    isTrackerReady,
     requestSummary,
     resetSession,
-  } = useFaceTracker(videoRef, null, cameraActive);
+  } = useFaceTracker(videoRef, cameraActive);
 
   // Track model loading status
   useEffect(() => {
-    if (isSidecarAvailable && isConnected) {
+    if (isTrackerReady && isConnected) {
       setModelReady('ready');
     }
     if (!cameraActive) return;
-    if (!isSidecarAvailable && modelReady === 'loading') {
+    if (!isTrackerReady && modelReady === 'loading') {
       setModelReady('failed');
     }
-  }, [isSidecarAvailable, isConnected, cameraActive, modelReady]);
+  }, [isTrackerReady, isConnected, cameraActive, modelReady]);
 
   // Track calibration progress
   useEffect(() => {

@@ -3,6 +3,8 @@ Tracker package — orchestrates all sub-modules into a single Pipeline.
 Call Pipeline.process(frame_bgr, timestamp_s) → FrameResult.
 """
 import os
+import sys
+import threading
 import time
 import urllib.request
 import numpy as np
@@ -65,10 +67,23 @@ def model_path(name: str) -> str:
     return path
 
 
-class Pipeline:
-    """Full per-frame analysis pipeline."""
+# schema.py lives one level up. Imported once here; process() used to insert into sys.path on
+# every frame, so the list grew without bound for as long as the server ran.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+from schema import FrameResult  # noqa: E402
+
+
+class Models:
+    """The heavy, shareable part: MediaPipe landmarkers and the emotion model, loaded once.
+
+    MediaPipe landmarkers aren't thread-safe, and in VIDEO mode each one needs strictly increasing
+    timestamps, so every caller goes through `lock` and takes timestamps from `next_timestamp_ms()`.
+    """
 
     def __init__(self):
+        self.lock = threading.Lock()
+        self._timestamp_ms = 0
+
         self.face = FaceTracker(model_path("face_landmarker.task"))
 
         hand_opts = HandLandmarkerOptions(
@@ -78,7 +93,7 @@ class Pipeline:
             min_hand_detection_confidence=0.6,
             min_tracking_confidence=0.6,
         )
-        self._hand_lm = HandLandmarker.create_from_options(hand_opts)
+        self.hand_lm = HandLandmarker.create_from_options(hand_opts)
 
         pose_opts = PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=model_path("pose_landmarker_lite.task")),
@@ -87,17 +102,45 @@ class Pipeline:
             min_pose_detection_confidence=0.6,
             min_tracking_confidence=0.6,
         )
-        self._pose_lm = PoseLandmarker.create_from_options(pose_opts)
-
-        self.hands = HandTracker(smooth_window=8)
+        self.pose_lm = PoseLandmarker.create_from_options(pose_opts)
 
         # Emotion: trained model if it loads, else the blendshape heuristic — a failed download
-        # shouldn't take the whole pipeline down.
+        # shouldn't take the whole pipeline down. onnxruntime sessions are safe to share.
         try:
-            self._emotion_model = EmotionModel(model_path("enet_b2_7.onnx"))
+            self.emotion_model = EmotionModel(model_path("enet_b2_7.onnx"))
         except Exception as exc:
             print(f"Emotion model unavailable, falling back to blendshape heuristic: {exc}")
-            self._emotion_model = None
+            self.emotion_model = None
+
+    def next_timestamp_ms(self) -> int:
+        """Shared ~30 fps synthetic clock; call with `lock` held."""
+        self._timestamp_ms += 33
+        return self._timestamp_ms
+
+    def close(self):
+        self.face.close()
+        self.hand_lm.close()
+        self.pose_lm.close()
+
+
+class Pipeline:
+    """Full per-frame analysis pipeline: one per camera session (blinks, calibration, smoothing).
+
+    Pass shared `models` to run many sessions on one set of models (the server does); without
+    them the pipeline loads its own (new.py, tests). The server used to share one Pipeline between
+    all connections, so blink counts, calibration and smoothing leaked between users.
+    """
+
+    def __init__(self, models: "Models | None" = None):
+        self._owns_models = models is None
+        self.models = models or Models()
+        # Per-pipeline references, so a test (or a failed model) can swap one for this session only.
+        self.face = self.models.face
+        self._hand_lm = self.models.hand_lm
+        self._pose_lm = self.models.pose_lm
+        self._emotion_model = self.models.emotion_model
+
+        self.hands = HandTracker(smooth_window=8)
         self._last_emotion_t = float("-inf")
 
         # EMA smoothers
@@ -120,7 +163,6 @@ class Pipeline:
         self._cal_ear_acc: float = 0.0
         self._cal_mov_acc: float = 0.0
 
-        self._timestamp_ms = 0
         self.last_face_res = None   # exposed for debug overlay
         self.last_hand_res = None   # exposed for debug overlay
         self.last_pose_res = None   # exposed for debug overlay
@@ -128,22 +170,19 @@ class Pipeline:
     # ------------------------------------------------------------------
     def process(self, frame_bgr: np.ndarray, ts: float = None):
         """Process one BGR frame. Returns FrameResult."""
-        import sys, os as _os
-        sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".."))
-        from schema import FrameResult
-
         if ts is None:
             ts = time.time()
 
-        self._timestamp_ms += 33  # ~30 fps synthetic clock
         rgb = frame_bgr[:, :, ::-1].copy()  # BGR → RGB
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-        face_res = self.face.detect(mp_image, self._timestamp_ms)
+        with self.models.lock:
+            timestamp_ms = self.models.next_timestamp_ms()
+            face_res = self.face.detect(mp_image, timestamp_ms)
+            hand_res = self._hand_lm.detect_for_video(mp_image, timestamp_ms)
+            pose_res = self._pose_lm.detect_for_video(mp_image, timestamp_ms)
         self.last_face_res = face_res  # cache for debug overlay
-        hand_res = self._hand_lm.detect_for_video(mp_image, self._timestamp_ms)
         self.last_hand_res = hand_res  # cache for debug overlay
-        pose_res = self._pose_lm.detect_for_video(mp_image, self._timestamp_ms)
         self.last_pose_res = pose_res  # cache for debug overlay
 
         face_detected = bool(face_res.face_landmarks)
@@ -255,9 +294,9 @@ class Pipeline:
         )
 
     def close(self):
-        self.face.close()
-        self._hand_lm.close()
-        self._pose_lm.close()
+        # Shared models belong to whoever created them (the server), not to one session.
+        if self._owns_models:
+            self.models.close()
 
     def reset_session(self):
         self._blink_count = 0

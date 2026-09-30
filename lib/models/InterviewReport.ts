@@ -91,28 +91,32 @@ export interface IInterviewReport extends mongoose.Document {
   updatedAt: Date;
 }
 
+// Text fields are deliberately not `required`: Mongoose's required rejects an empty string, and
+// the model legitimately returns "" (e.g. userResponse for a question the candidate never
+// answered). That used to fail save() after the AI call had already been paid for. Shape and
+// types are validated before saving by the zod schema in lib/reportSchema.ts.
 const PerformanceAnalysisSchema = new mongoose.Schema({
   communicationSkills: {
     score: { type: Number, required: true, min: 0, max: 100 },
     strengths: [{ type: String }],
     improvements: [{ type: String }],
-    feedback: { type: String, required: true }
+    feedback: { type: String, default: '' }
   },
   technicalKnowledge: {
     score: { type: Number, required: true, min: 0, max: 100 },
     strengths: [{ type: String }],
     improvements: [{ type: String }],
-    feedback: { type: String, required: true }
+    feedback: { type: String, default: '' }
   },
   problemSolving: {
     score: { type: Number, required: true, min: 0, max: 100 },
     strengths: [{ type: String }],
     improvements: [{ type: String }],
-    feedback: { type: String, required: true }
+    feedback: { type: String, default: '' }
   },
   confidence: {
     score: { type: Number, required: true, min: 0, max: 100 },
-    analysis: { type: String, required: true },
+    analysis: { type: String, default: '' },
     recommendations: [{ type: String }]
   },
   bodyLanguage: {
@@ -124,22 +128,22 @@ const PerformanceAnalysisSchema = new mongoose.Schema({
 
 const DetailedFeedbackSchema = new mongoose.Schema({
   overallScore: { type: Number, required: true, min: 0, max: 100 },
-  summary: { type: String, required: true },
+  summary: { type: String, default: '' },
   keyStrengths: [{ type: String }],
   areasForImprovement: [{ type: String }],
   specificFeedback: [{
     questionId: { type: String, required: true },
-    question: { type: String, required: true },
-    userResponse: { type: String, required: true },
-    feedback: { type: String, required: true },
+    question: { type: String, default: '' },
+    userResponse: { type: String, default: '' },
+    feedback: { type: String, default: '' },
     score: { type: Number, required: true, min: 0, max: 100 },
     suggestions: [{ type: String }]
   }],
   behavioralInsights: {
-    pauseAnalysis: { type: String, required: true },
-    speechPaceAnalysis: { type: String, required: true },
-    confidenceAnalysis: { type: String, required: true },
-    emotionalStateAnalysis: { type: String, required: true }
+    pauseAnalysis: { type: String, default: '' },
+    speechPaceAnalysis: { type: String, default: '' },
+    confidenceAnalysis: { type: String, default: '' },
+    emotionalStateAnalysis: { type: String, default: '' }
   },
   recommendations: {
     immediate: [{ type: String }],
@@ -205,6 +209,7 @@ const InterviewReportSchema = new mongoose.Schema(
 
 // Indexes for efficient queries
 InterviewReportSchema.index({ userId: 1 });
+InterviewReportSchema.index({ guestId: 1 });
 InterviewReportSchema.index({ generatedAt: -1 });
 
 const InterviewReportModel = (mongoose.models.InterviewReport as mongoose.Model<IInterviewReport>) ||

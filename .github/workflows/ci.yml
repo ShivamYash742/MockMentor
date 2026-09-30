@@ -18,3 +18,45 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      # Placeholder values: the build only needs them to be present, it never calls these services.
+      - run: npm run build
+        env:
+          MONGODB_URI: mongodb://127.0.0.1:27017/ci
+          GROQ_API_KEY: gsk_placeholder
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
+          CLERK_SECRET_KEY: sk_test_placeholder
+          NEXT_PUBLIC_APPWRITE_ENDPOINT: https://appwrite.example/v1
+          NEXT_PUBLIC_APPWRITE_PROJECT_ID: placeholder
+          NEXT_PUBLIC_BUCKET_ID: placeholder
+          APPWRITE_API_KEY: placeholder
+          NEXT_TELEMETRY_DISABLED: 1
+
+  # The Python reference implementation (model/), then the browser emotion model checked against
+  # it: test_pipeline.py writes the fixture that lib/emotionModel.test.ts compares with (skipped
+  # in the job above, where the fixture doesn't exist).
+  sidecar:
+    runs-on: ubuntu-latest
+    env:
+      LIBGL_ALWAYS_SOFTWARE: 1
+      MESA_GL_VERSION_OVERRIDE: '3.3'
+      MESA_LOADER_DRIVER_OVERRIDE: swrast
+      EGL_PLATFORM: surfaceless
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgles2 libegl1 libgl1 libglvnd0 libgl1-mesa-dri
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: model/requirements.txt
+      - run: pip install -r model/requirements.txt
+      - run: python test_pipeline.py
+        working-directory: model
+      - run: python test_server.py
+        working-directory: model
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node --test lib/emotionModel.test.ts

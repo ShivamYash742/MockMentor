@@ -38,7 +38,8 @@ export const mentors: Mentor[] = [
     personality: 'You are Silas, a professional, direct Corporate HR Manager. Your focus is on leadership potential, alignment with company values, career trajectory, and handling high-pressure situations.'
   },
   {
-    id: ' Bryan_IT_Sitting_public',
+    // Stored with a stray leading space before; getMentorById trims, so old interviews still match.
+    id: 'Bryan_IT_Sitting_public',
     image: '/mentors/Bryan_IT_Sitting_public.webp',
     name: 'Bryan',
     role: 'Technical Lead',
@@ -53,7 +54,7 @@ export const mentors: Mentor[] = [
   },
 ];
 
-export const getMentorById = (id: string): Mentor | undefined => {
+export const getMentorById = (id: string | null | undefined): Mentor | undefined => {
   if (!id) return undefined;
   const cleanId = id.trim();
   return mentors.find(m => m.id.trim() === cleanId);

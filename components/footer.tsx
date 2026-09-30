@@ -29,6 +29,12 @@ const Footer = React.forwardRef<
             >
               New Interview
             </Link>
+            <Link
+              href="/emotion-demo"
+              className="text-sm font-geist text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors duration-300"
+            >
+              Emotion Demo
+            </Link>
           </nav>
 
           {/* Creator Credit & Social Links - COMMENTED OUT */}

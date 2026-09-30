@@ -10,8 +10,9 @@ export async function parsePDF(buffer: Buffer): Promise<string> {
         const PDFParser = module.default;
         const pdfParser = new PDFParser(null, true); // Enable raw text mode
 
-        pdfParser.on('pdfParser_dataError', (errData: Error) => {
-          reject(new Error(`PDF parsing failed: ${errData.message}`));
+        pdfParser.on('pdfParser_dataError', (errData: Error | { parserError: Error }) => {
+          const cause = 'parserError' in errData ? errData.parserError : errData;
+          reject(new Error(`PDF parsing failed: ${cause.message}`));
         });
 
         pdfParser.on('pdfParser_dataReady', (pdfData: { Pages?: Array<{ Texts?: Array<{ R?: Array<{ T?: string }> }> }> }) => {
@@ -63,7 +64,7 @@ export async function parsePDF(buffer: Buffer): Promise<string> {
 }
 
 /**
- * Truncate content to avoid Gemini API input size limits.
+ * Truncate content to keep AI prompts (and their cost) bounded.
  * @param content - Raw text content
  * @param maxChars - Maximum characters (default 8000)
  */

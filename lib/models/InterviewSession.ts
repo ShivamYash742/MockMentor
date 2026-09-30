@@ -10,6 +10,7 @@ export interface IMessage {
   confidence?: number; // Speech recognition confidence (0-1)
   emotion?: string; // Detected emotion
   volume?: number; // Audio volume level
+  kind?: 'nudge'; // an interviewer check-in after silence, not a question to be graded
 }
 
 export interface IInterviewMetrics {
@@ -41,6 +42,9 @@ export interface IInterviewSession extends mongoose.Document {
   metrics: IInterviewMetrics;
   startTime: Date;
   endTime?: Date;
+  // Camera summary sent by the client when the interview ends (sanitized), so a report generated
+  // later — after a refresh, or on another visit — still has it.
+  faceAnalytics?: Record<string, unknown>;
   status: 'active' | 'completed' | 'abandoned';
   reportGenerated: boolean;
   createdAt: Date;
@@ -56,7 +60,8 @@ const MessageSchema = new mongoose.Schema({
   pauseBefore: { type: Number },
   confidence: { type: Number, min: 0, max: 1 },
   emotion: { type: String },
-  volume: { type: Number }
+  volume: { type: Number },
+  kind: { type: String, enum: ['nudge'] }
 });
 
 const MetricsSchema = new mongoose.Schema({
@@ -104,6 +109,9 @@ const InterviewSessionSchema = new mongoose.Schema(
     },
     endTime: {
       type: Date,
+    },
+    faceAnalytics: {
+      type: mongoose.Schema.Types.Mixed,
     },
     status: {
       type: String,

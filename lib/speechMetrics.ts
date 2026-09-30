@@ -22,25 +22,30 @@ export interface SpeechMetrics {
 
 // Matched as whole-word/whole-phrase boundaries, not as single tokens — the old
 // `words.split(/\s+/)` approach could never match "you know" since no single word equals it.
-const FILLER_PHRASES = ['um', 'uh', 'like', 'you know', 'actually', 'basically', 'literally'];
+const FILLER_PATTERNS = ['um', 'uh', 'you know', 'actually', 'basically', 'literally'].map(
+  (phrase) => new RegExp(`\\b${phrase}\\b`, 'g')
+);
+// "like" is only a filler when it isn't doing its normal job: "I like Python", "would like to",
+// "looks like", "felt like" and so on are real words, not hesitation.
+const FILLER_LIKE = /(?<!\b(?:i|you|we|they|he|she|would|'d|do|don't|didn't|really|also|looks?|looked|feels?|felt|seems?|seemed|sounds?|something|anything|nothing|much|more|not)\s)\blike\b/g;
 
 export function countFillerWords(text: string): number {
-  const normalized = text.toLowerCase();
-  return FILLER_PHRASES.reduce((count, phrase) => {
-    const re = new RegExp(`\\b${phrase}\\b`, 'g');
-    return count + (normalized.match(re)?.length ?? 0);
-  }, 0);
+  const normalized = text.toLowerCase().replace(/[’]/g, "'");
+  return [...FILLER_PATTERNS, FILLER_LIKE].reduce(
+    (count, re) => count + (normalized.match(re)?.length ?? 0),
+    0
+  );
 }
 
 export function computeSpeechMetrics(userMessages: SpeechMessage[], totalDurationMs: number): SpeechMetrics {
-  const allText = userMessages.map((m) => m.content).join(' ').trim();
-  const wordsSpoken = allText ? allText.split(/\s+/).length : 0;
-  const fillerWordsCount = countFillerWords(allText);
+  // Pace, fillers and fluency describe speech, so only spoken answers (the ones with a measured
+  // duration) count. Typed answers used to add their words to WPM with no time to divide by.
+  const spoken = userMessages.filter((m) => typeof m.durationMs === 'number' && m.durationMs > 0);
+  const spokenText = spoken.map((m) => m.content).join(' ').trim();
+  const wordsSpoken = spokenText ? spokenText.split(/\s+/).length : 0;
+  const fillerWordsCount = countFillerWords(spokenText);
 
-  const durations = userMessages
-    .map((m) => m.durationMs)
-    .filter((d): d is number => typeof d === 'number' && d > 0);
-  const userSpeakingTime = durations.reduce((sum, d) => sum + d, 0);
+  const userSpeakingTime = spoken.reduce((sum, m) => sum + (m.durationMs as number), 0);
 
   const pauses = userMessages
     .map((m) => m.pauseBefore)

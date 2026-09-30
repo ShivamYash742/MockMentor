@@ -5,7 +5,6 @@ const isPublicRoute = createRouteMatcher([
   '/emotion-demo',
   '/test-face(.*)',
   '/api/auth/guest(.*)',
-  '/api/guest/interview-count(.*)',
   '/api/create-interview(.*)',
   '/api/interview-session(.*)',
   '/api/process-resume(.*)',

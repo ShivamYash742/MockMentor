@@ -1,8 +1,8 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  reactStrictMode: false,
+  // Development-only double-invocation of effects, to catch effects that don't clean up.
+  reactStrictMode: true,
 };
 
 export default nextConfig;

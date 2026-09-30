@@ -553,3 +553,408 @@ Two commits: (1) the `model/` upgrade already done, (2) this integration. Tell m
 **Notes**
 - The dev overlay's "1 issue" is MediaPipe's own startup line ("Created TensorFlow Lite XNNPACK delegate for CPU") printed via `console.error`. It predates this change and is harmless.
 - Not linked from anywhere yet (landing page / navbar). Nothing committed.
+
+---
+
+## Audit #2 — bugs and upgrade ideas (2026-09-30)
+
+> **Status: Steps 6–10 done ✅ (2026-09-30).** Every bug in A–D is fixed and verified, plus 13 more found while verifying. The product ideas in E are the remaining backlog; see "What's left" at the end.
+
+I read every source file again after the v2.0.0 release. Baseline: `lint`, `typecheck` and `test` (18 pass, 1 skipped) all pass, and `npm audit` reports 0 vulnerabilities. Items marked **(verified)** were reproduced. Everything else comes from reading the code, with the exact line.
+
+How I verified: I ran the real `useSpeechToText` hook, an exact copy of the camera effect, and the real `ScrollArea` in headless Chromium, with a fake `SpeechRecognition` and a fake camera. Mongoose and prompt behaviour were checked in Node. The harness is in my scratchpad and nothing was added to the repo.
+
+### A. Broken for users right now
+1. **Every spoken answer repeats its last phrase (verified).** `hooks/useSpeechToText.ts:172` builds the answer as `transcriptRef.current + currentFinal`, but by the time the 3 s timer fires, `transcriptRef` already contains `currentFinal`.
+   - Saying "hello world" produced `"hello world hello world"`.
+   - Two phrases produced `"I like Python and Go and Go"`.
+   - This corrupts what the AI hears, the saved transcript, the WPM and filler counts, and the report.
+2. **Turning the camera off doesn't turn it off (verified).** `components/interview.tsx:453` unmounts the `<video>` when the camera is off. By the time the effect at `:202` runs, `videoRef.current` is already `null`, so the tracks are never stopped.
+   - The track stayed `live` after the toggle.
+   - The camera light stays on, and every off/on leaks another stream. This is a privacy issue.
+3. **The report page crashes when the camera data is partial.**
+   - `components/interview-report.tsx:412` calls `Object.entries(report.faceAnalytics.emotions_avg)`, and `:454` calls `stress_peak.toFixed`.
+   - `exitInterview` stores only `{ questionSnapshots }` when the final summary is empty (`components/interview.tsx:310-314`).
+   - Trigger: turn the camera off, let one more question be asked, then end the interview. `emotions_avg` is then `undefined`, which throws a `TypeError` and gives a blank error page.
+4. **The report is thrown away after the AI call if any string is empty (verified).**
+   - Mongoose `required` rejects `''`.
+   - The prompt itself expects unanswered questions, so `userResponse: ""` is a likely model output. `lib/models/InterviewReport.ts:131-142` then fails `save()` with a 500, and every retry pays for the AI again.
+5. **The AI keeps talking after the interview ends.** `components/logic/useVoiceInterview.ts:54-56` speaks the reply without checking `isActive`. If the timer hits 0 while a reply is in flight, the voice plays over the "complete" screen. `addMessage` also runs after `clearMessages`.
+6. **Typed answers are silently lost while the AI is thinking or speaking.** `useVoiceInterview.ts:28` returns early on `isProcessing`, and `components/interview.tsx:299-300` clears the text box anyway.
+7. **Pause doesn't hold.**
+   - After the AI finishes speaking, the mic restarts even while paused: `useVoiceInterview.ts:162-166` checks `isActive` and `isMuted`, but not `isPaused`.
+   - The server clock also keeps running while paused, so a long pause can use up the whole interview. The UI doesn't say this.
+8. **The transcript never auto-scrolls (verified).** The ref at `components/interview.tsx:496` points at the Radix root, not the scrolling viewport. In the test, `scrollTop` was set but the viewport stayed at 0 with 1,484 px left to scroll.
+9. **The setup page's "Start Interview" button spins forever after a server error**, for example the guest limit's 403. `app/interview/new/page.tsx:259-271` only resets `loading` in `catch`, not in the `data.success === false` branch.
+10. **Upload errors show raw JSON.** In `app/interview/new/page.tsx:160-166`, the inner `catch {}` catches the error thrown just above it. The user sees `Server error: 400 - {"error":"File is too large (max 5MB)"}` instead of the message.
+11. **The landing page's "Start Interview" button leads nowhere for new visitors.** `app/page.tsx:24` links to `/interview/new` without creating a guest session. Every step there then fails with a 401 and a vague "Failed to process resume text". Nothing says "sign in or try as guest".
+12. **A guest who has already used their interview finds out only at the last step,** after the resume and job AI calls. The guest API already returns `canStartInterview`, and nothing reads it.
+
+### B. Report accuracy
+13. **Stress goes to the AI on the wrong scale.** `app/api/generate-report/route.ts:21` labels it "0-1", but the value is 0–10 (`lib/faceAnalysis.ts:435`). A calm 2.0 reads as "maximum stress".
+14. **Body-language numbers only cover the last question.**
+    - `resetSession()` clears the frame log at every new question (`hooks/useFaceTracker.ts:392`).
+    - `exitInterview` uses the final `requestSummary()` as the top-level stats (`components/interview.tsx:309-311`).
+    - The per-question snapshots are stored but never combined.
+15. **Camera data only lives in browser memory until "Generate report" is clicked.** A refresh, or coming back later (`app/interview/[id]/page.tsx:101-107` passes no `faceAnalytics`), silently gives "Not assessed".
+16. **A report can be generated with zero answers.**
+    - With an empty transcript, `formatPrompt` leaves the literal `{conversationText}` in the prompt (`lib/promptHelper.ts:11`, verified), because an empty string is falsy.
+    - This spends an AI call to grade nothing.
+17. **WPM mixes typed and spoken answers.** Typed words are counted, but only spoken time is in the denominator (`lib/speechMetrics.ts:37,52`). "like" is always counted as a filler word ("I like Python").
+18. **The blink rate is inflated.** `blinks_per_min_avg` averages a running rate that starts very high (1 blink in the first second counts as 60/min), at `lib/faceAnalysis.ts:571`. Total blinks divided by duration would be accurate.
+
+### C. Security and cost
+19. **No rate limiting, and guest accounts are free and unlimited.**
+    - `POST /api/auth/guest` without an id creates a new guest every time (`app/api/auth/guest/route.ts:17-24`), so the one-interview limit is only a speed bump.
+    - Each guest can run up resume, job, welcome, unlimited `ai-chat` and report calls on your Groq key.
+    - `ai-chat` is limited by time (about 5 minutes), not by number of calls.
+20. **Client text flows into every prompt without length limits.**
+    - `create-interview` stores `jobSummary` and `resumeSummary` exactly as the client sends them (`app/api/create-interview/route.ts:12`).
+    - `process-job` doesn't cap `jobDescription`.
+    - `add_message` doesn't cap text length or message count.
+    - The whole transcript goes into the report prompt.
+21. **The client writes the transcript that the report grades.** `add_message` accepts `sender: 'interviewer'` from any caller. A user can only harm their own report, but having `ai-chat` save both turns on the server fixes this and also fixes message ordering (see D).
+22. **Error details leak to the client:** `details: error.message` at `app/api/upload-resume/route.ts:82` and `app/api/process-resume/route.ts:46`.
+23. **Resume files are never deleted**, and guests' files are left behind with nothing pointing to them. Pasting resume text also overwrites a signed-in user's `resumeUrl` with the string `"text-input"` (`app/interview/new/page.tsx:107`).
+24. **The Python sidecar can still be deployed through `render.yaml`**, even though the app doesn't use it. It has:
+    - CORS `*` and no authentication;
+    - one `Pipeline` shared by all users, and any client's `reset` resets everyone;
+    - CPU work inside the async WebSocket handler, which blocks the event loop.
+    Either stop deploying it, or fix it before integrating.
+
+### D. Smaller bugs and cleanup
+- **Messages can be saved out of order.** New messages are saved in parallel (`components/interview.tsx:161`), and the array order is whatever order they arrive in. Message ids are `Date.now()`, so two messages in the same millisecond collide.
+- **Clicking "Generate report" twice can give a 500.** Both requests call the AI, then the second `save()` hits the unique index.
+- **The report can time out.** `generateWithGroq`'s 8 s default timeout (`lib/groq.ts:36`) also applies to the large structured report. That risks a 503 on longer interviews, so the report needs its own, longer timeout.
+- **One mentor id has a leading space:** `' Bryan_IT_Sitting_public'` (`lib/mentors.ts:41`). `generate-report` matches ids exactly (`:115`), while other places trim them.
+- **The copy mentions a "dashboard" that doesn't exist:** "…later from the dashboard" and "Back to Dashboard" (`components/interview-complete.tsx:53,164`).
+- **The error card's button does two things.** A `<Link>` sits inside `<Button onClick={fetchInterview}>` (`app/interview/[id]/page.tsx:78-80`), so a click both refetches and navigates.
+- **Some animation classes are never defined:** `animate-blob`, `animation-delay-*`, `shine` and `direction-reverse`. Those animations do nothing.
+- **The report page is always dark** (`bg-[#0a0a0a]`, `components/interview-report.tsx:190`), whatever the theme.
+- **Accessibility gaps:** the icon-only control buttons have no `aria-label`, and the mentor cards can't be selected with the keyboard (`app/interview/new/page.tsx:583`).
+- **Stale references:**
+  - `middleware.ts:7` lists `/api/guest/interview-count`, which doesn't exist;
+  - the error hints in `lib/mongodb.ts` and `lib/appwrite-server.ts` still say `.env.local`.
+- **Dead code:**
+  - `createEmotionClassifier` has two identical ternary branches;
+  - `useFaceTracker`'s `sessionId` parameter is unused;
+  - `isSidecarAvailable` is a stale name.
+- **Timers aren't cleared on unmount:** the welcome message and gaze-banner timers.
+- **Needs a real-browser check:**
+  - the silence nudge repeats every 10 s with no limit;
+  - Chrome's own `no-speech` restart may re-arm the 10 s timer before it ever fires, which would also skew `pauseBefore`.
+
+### E. Upgrade ideas
+**Product**
+- A dashboard with interview history, score trends, and reports you can reopen. The models already index `userId`.
+- Configurable length and question count, plus modes: behavioural/STAR, technical, system design.
+- A device check before the interview: mic level, camera, and speech support, so Firefox users know up front to type.
+- Streaming AI replies, spoken sentence by sentence, for lower latency.
+- Whisper speech-to-text through `@ai-sdk/groq`. It works in Firefox and Safari and gives real confidence values.
+- Report extras:
+  - filler words highlighted in the transcript;
+  - a per-question timeline of stress and emotion;
+  - a model "better answer" rewrite;
+  - a "retry this question" drill;
+  - PDF export or a share link.
+- Move a guest's interview into their account when they sign up.
+- `.docx` resumes, and letting the user review or edit the resume summary before the interview.
+
+**Engineering**
+- Rate limiting per IP and per identity on guest creation and the AI routes, plus a daily cap. Mongo TTL counters work without new infrastructure.
+- A transcript owned by the server: `ai-chat` saves both turns, and `add_message` is removed.
+- Enforce the rubric's hard rules in code after generation, for example the score cap by number of answered questions and "overall within ±8 of the average", instead of trusting the model.
+- Tests:
+  - API routes (`mongodb-memory-server`);
+  - Playwright tests for the voice and camera hooks (the harness above);
+  - a CI `build` step with placeholder env vars.
+- Turn on `strict` in `tsconfig` and `reactStrictMode`, after the effect bugs are fixed.
+- Add `error.tsx` and `not-found.tsx`.
+- Performance:
+  - move the camera and HUD into their own component, since the whole interview page re-renders at 10 Hz today;
+  - self-host or quantize the 30 MB emotion model. `raw.githubusercontent.com` isn't a CDN, and an int8 version is about 8 MB.
+- Major upgrades:
+  - Next 16, Clerk 7, `ai` 7, Mongoose 9, zod 4;
+  - `@mediapipe/tasks-vision` 1.0, whose pinned CDN wasm URL must change with it.
+- Privacy: a resume retention policy, "delete my data", and a short camera and privacy notice.
+
+### Proposed order (one step at a time, checking in after each)
+- [x] **Step 6: live interview:** A1, A2, A5, A6, A7, A8, plus message order and ids from D.
+- [x] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
+- [x] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
+- [x] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
+- [x] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
+- The ideas in E stay a backlog until you choose some.
+
+### How each step is verified
+A local rig, all in my scratchpad, nothing added to the repo:
+- a throwaway `mongo:7` in Docker;
+- a fake Groq server that speaks the same OpenAI-style API. It logs every prompt, and it can be told to fail or return edge-case reports;
+- `next build` + `next start` with placeholder keys, and end-to-end API scripts against that;
+- a browser harness that runs the **real** `components/interview.tsx` in headless Chromium, with a fake mic (`SpeechRecognition`), speaker (`speechSynthesis`), camera and API. It uses the app's own compiled CSS, so the layout is real too.
+
+The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq.ts`, which is documented in `.env.example` and does nothing unless it's set.
+
+### Review — Step 6: live interview (2026-09-30)
+**What changed**
+- **A1, spoken answers doubled.** The answer is now built by a small pure module, `lib/speechAnswer.ts` (5 unit tests). The hook reads it synchronously, so nothing is appended twice.
+  - Results that arrive after the hook stops listening are dropped, since that answer was already sent with its unfinished words included.
+  - Chrome's own automatic restarts (after about 8 s of silence) no longer reset the silence timer or the answer's timing. Only a new turn does.
+- **Silence nudge:** at most 2 in a row, and a real answer resets the count.
+- **A2, camera stayed on.** The stream is kept in its own ref and stopped in the effect's cleanup, including when the interview ends or the page unmounts. A camera request that finishes after the camera was turned off is stopped straight away.
+- **The server now keeps the transcript (fixes C21, message order, and id collisions).**
+  - `/api/ai-chat` saves the candidate's answer (with clamped timing) and the interviewer's reply to the session itself, in order, with server-generated ids.
+  - The prompt's history comes from that copy, and the client-sent `conversationHistory` is ignored.
+  - `add_message` is gone.
+  - Check-ins after silence are stored with `kind: 'nudge'`.
+  - An answer is kept even if the AI call fails.
+  - There's a per-interview cap of 60 messages (`409 message_limit`).
+- **A refresh restores the interview.** `start` returns the saved transcript. `START_INTERVIEW` on an interview that already has messages repeats the last question (`resumed: true`) instead of generating a second welcome.
+- **Metrics are computed on the server** (`lib/sessionLifecycle.ts`) from the stored transcript and the start/end times, whenever a session closes: the client's "end", the stale-interview auto-close, and (Step 7) report generation. Client-sent metrics are ignored.
+- **B15, camera summary lost on refresh.** It's now sent with "end" and stored (sanitized) on the session.
+- **A5:** a reply that arrives after the interview ended is never spoken or added. `exitInterview` silences voice and mic first, before its network calls.
+- **A6:** Send is disabled while the interviewer is thinking or speaking, and typed text is kept, not cleared. The status shows "Thinking...", and the typing dots now show (they could never appear before).
+- **A7:** the mic doesn't restart after a reply while paused. A banner says the clock keeps running.
+- **A8:** `ScrollArea` gained a `viewportRef`, and the transcript scrolls to the newest message.
+- **Messages:** unique `crypto.randomUUID()` ids in the voice context.
+- **Timers:** the welcome and gaze-banner timers are cleared on unmount.
+- **Face tracker:** the unused `sessionId` parameter is gone, `isSidecarAvailable` is renamed `isTrackerReady`, and the interview uses `isConnected`. The HUD no longer shows a frozen reading while the camera is off.
+- **Accessibility:** every icon-only button has an `aria-label`, and the toggles have `aria-pressed`.
+- **Found while verifying (not in the audit):**
+  - **The Start button was below the fold.** The full-screen "Your interview is starting soon" placeholder showed until the interview connected, which only happens after Start is clicked. On a 1280×800 screen the button sat at y=1143. The placeholder is removed, and the button now shows "Starting...".
+  - **The transcript panel never scrolled.** It grew with the page, so with a long transcript the answer box was pushed about 3,600 px down. On mobile, where the panel is a fixed overlay, it was unreachable. The panel now has a bounded height with a `min-h-0` chain.
+  - **The controls overflowed on a 390 px phone.** Their spacing is tighter on small screens now.
+  - **End before Start** showed "Mission Accomplished" for an interview that never ran. End is now disabled until the interview has started.
+  - If speech recognition isn't supported (Firefox), the transcript opens automatically so the candidate can type.
+
+**Proof**
+- `lint`, `typecheck`, `test` (23 pass, 1 skipped parity test that needs the Python fixture) and `build` all pass.
+- **API end to end: 24/24.**
+  - ai-chat before start → 409. The welcome is saved.
+  - An answer with injected `conversationHistory`/`knowledgeBase`: the prompt contains the server transcript and none of the injected text.
+  - The transcript is stored in order (`interviewer, user, interviewer, interviewer:nudge`) with unique ids and rounded timing.
+  - A repeated START gives `resumed`, and nothing new is saved.
+  - A refresh keeps the same `startTime` and returns the transcript.
+  - AI down → 503, and the answer is still saved (a 1e12 ms duration is clamped to 10 min).
+  - A 5,000-char message is cut to 2,000. Another guest gets 404. `add_message` gives 400. The 61st message gives `409 message_limit`.
+  - end → client metrics are ignored, the server's are computed (`userSpeakingTime` = sum of durations), and junk face fields are dropped.
+  - ai-chat after end → 409.
+  - A stale interview auto-closes with `totalDuration` 180000 and `wordsPerMinute` 80.
+- **Browser, real component: 30/30 checks in 8 scenarios**, covering everything above. Run against the **old** code, the same harness fails. For example, it sent `"hello world hello world"` to the AI.
+- **Layout (measured):**
+  - Desktop: the page is exactly 800 px tall, Start is at y=432, and the transcript scrolls inside a 508 px panel.
+  - Phone (390 px): no horizontal overflow, Start is at y=260, and the answer box is visible with the panel open.
+
+**Not verified here:** real Chrome speech recognition and a real camera. The harness fakes their events in the same shape and order as the browser APIs. Please do one real interview in Chrome.
+
+### Review — Step 7: report pipeline (2026-09-30)
+**What changed**
+- **⚠ Found while verifying, the most important fix in this step: the database's unique indexes were never built.**
+  - `lib/mongodb.ts` connected with `bufferCommands: false`. The models are defined when their modules load, before the connection exists. Mongoose's automatic index build then doesn't wait for the connection, fails, and swallows the error.
+  - On a fresh database only `guestusers` had its unique index. The unique `interviewId` indexes on sessions and reports were missing, so Step 2's guarantees (one session per interview, one report per interview) quietly didn't hold. I reproduced two reports saved for one interview.
+  - Buffering is back on (Mongoose's default), so index builds wait for the connection. Verified on a dropped database: every schema index now exists.
+  - The circular `global.d.ts` type that forced a `@ts-ignore` is fixed too.
+  - **Before deploying:** check production for duplicates with the aggregation noted under Step 2. If duplicates exist, the unique index build fails. That failure is logged but doesn't break requests.
+- **A3, report page crash:**
+  - The source is fixed: see B14 below.
+  - The page itself now renders only the camera fields that exist. It shows "No answer given." for an empty answer. A "not generated yet" report links back to the interview, where it can be generated.
+- **A4, empty strings broke the save:** report text fields are no longer `required` in Mongoose, and zod still validates the shape. An empty `userResponse`/`feedback` now saves.
+- **B13:** stress is labelled 0–10 in the prompt.
+- **B14, only the last question's camera data counted:** `combineSummaries()` in `lib/faceAnalysis.ts` merges all per-question summaries, frame-weighted, with totals summed and the highest peak. The interview sends that whole-interview summary, so there's always a complete top-level summary whenever any frames exist.
+- **B15** was done in Step 6. `generate-report` uses the session's stored camera summary, with the request's copy as a fallback.
+- **B16, grading an empty interview:**
+  - An interview with no answers returns `400 no_answers` with no AI call, and the completion screen says so.
+  - `formatPrompt` now substitutes empty strings instead of leaving `{placeholders}`.
+- **B17, speech numbers:**
+  - Pace and filler words use spoken answers only.
+  - "like" counts only as hesitation: "I like Python" and "looks like" no longer count.
+  - Typed answers get an honest prompt section instead of "Speaking Time: 0 seconds" plus the −15 penalty. That was a real unfairness for Firefox users.
+- **B18:** the blink rate is total blinks over the duration.
+- **Rubric enforced in code:** `lib/reportRules.ts` applies the rules that are pure caps and clamps, so a report that already follows them is unchanged. The point deductions stay with the model to avoid double-counting.
+  - overall within ±8 of the question average;
+  - a cap of 45 for 1 answer and 55 for 2;
+  - no strengths listed for a category under 40.
+- **Double "Generate" gave a 500:** a duplicate-key error on save now returns the report that won the race.
+- **Report timeout:** 60 s instead of the 8 s chat default. I also checked that a timed-out model really does fall back to the next one.
+- **Other report fixes:**
+  - metrics come from the session's own transcript;
+  - an active session (the "end" call never arrived) is closed by `generate-report`;
+  - nudges are left out of the graded transcript;
+  - the transcript is capped at 40k chars;
+  - `reportGenerated` is now set on the interview and the session;
+  - the mentor is looked up with `getMentorById`, the trimmed match.
+- **Copy:** "…from the dashboard" became "come back to this page", and "Back to Dashboard" became "Start a new interview".
+
+**Proof**
+- `lint`, `typecheck` and `test` all pass: 32 pass, 1 skipped. That's 9 new tests: `reportRules` ×4, `combineSummaries`/blink rate ×3, and 2 for filler words and WPM.
+- **API end to end: 28/28 against the fake Groq server.** Checks include:
+  - the prompt contains `Stress level (0-10…): 2.5`, `1 of 3 answers were typed`, `Speaking Time: 9 seconds` (spoken answers only) and `Filler Words: 2`, with no `{placeholder}` left;
+  - 97 is pulled to 38 (question average 30);
+  - an empty-strings report saves;
+  - no answers → 400 with **zero** AI calls;
+  - **two racing generate calls → both 200, exactly one report** (this failed before the index fix);
+  - a missing "end" is closed by generate, with sanitized fallback camera data;
+  - typed-only → speech marked not measured;
+  - AI down → 503 with nothing saved, then a retry works.
+- Step 6's suite still passes (25/25), plus **5 parallel starts → one session**.
+- **Browser:** the report page with legacy `{ questionSnapshots }`-only data and with partial data renders without errors. "Not generated yet" links back. The completion screen explains nothing-to-grade and hides Generate and Retry. The 8 interview scenarios still pass.
+
+### Review — Step 8: setup and onboarding (2026-09-30)
+**What changed**
+- **A11 and A12, who is setting up:** `/interview/new` now works out who the visitor is before showing the wizard.
+  - A signed-in user sees the wizard, with their saved resume.
+  - A guest with an interview left sees the wizard.
+  - Nobody yet: "Sign in, or try one interview as a guest", with both buttons right there. The landing page's "Start Interview" used to lead into a wizard where every step failed with a 401.
+  - A guest who has used their interview is told so up front, with a Sign in button. This used to happen only at the last step, after two AI calls.
+  - A stale stored guest id (e.g. after a database reset) is cleared, so the visitor gets a fresh start instead of 401s.
+  - The shared helper is `lib/guestSession.ts`. The navbar uses it too, and shows "Try again" instead of an `alert()` when it fails.
+- **A9:** a failed "Start Interview" resets the button and shows the server's reason. A guest who hit the limit in another tab is switched to the "you've used your interview" screen.
+- **A10:** every step shows the server's message, e.g. "File is too large (max 5MB)", instead of the raw JSON the old nested `try/catch` produced.
+- **C23 (part):** pasted resume text no longer overwrites a signed-in user's saved resume link with the string `"text-input"`. `process-resume` no longer takes or echoes a `fileUrl`.
+- **Error card on `/interview/[id]`:** the `<Link>` is no longer nested in a `<Button onClick={fetchInterview}>`, which did both on one click. There are now two buttons, "Try again" and "Start a new interview". A 401 or 404 gets a plain explanation.
+- The "dashboard" wording was fixed in Step 7.
+- **Found while doing this step:**
+  - **The mentor step had no Back button,** so you couldn't go back and fix the job details. Added.
+  - **"Choose a file or drag it here" had no drag and drop.** Dropping now works, with a highlighted drop zone.
+  - **Going Back and then Next re-sent an unchanged resume and job description to the AI,** and re-uploaded the file each time. Unchanged input is now skipped. Changed input is sent again.
+  - **The file type and 5 MB size are checked before uploading.** Inputs have the server's length limits, and pasted text shows a live character count.
+  - **Labels are tied to their inputs.** Mentor cards are real buttons (keyboard and `aria-pressed`) and show the mentor's role.
+  - **Phone layout:** at 390 px the page was 30 px wider than the screen. The step indicator overflowed, and the navbar wrapped "Mock Mentor" and "Sign in". On phones the step names are now hidden (each card's heading names the step), "Try as Guest" becomes "Guest", and the navbar's spacing is tighter.
+
+**Proof**
+- `lint`, `typecheck`, `test` and `build` pass.
+- **Browser (the real setup page, with stand-ins for Clerk and the router): 21/21.**
+  - Covers everything above: the gate for a new visitor, a used guest and a stale guest; the clean upload error; `.docx` and 6 MB rejected with zero uploads; drag and drop; the resume and job each summarized once across Back/Next and again after a change; Back from the mentor step; mentor selection with Enter; the create failure un-spinning, plus a retry that navigates.
+  - At 390 px nothing extends past the screen, including the navbar.
+- **The interview page's error card: 4/4.** It explains the 401, the link isn't nested in a button, and "Try again" refetches.
+- **API:** 6/6 new checks (`process-resume` without `fileUrl`, old payloads still accepted, guest reuse and 404). Steps 6 and 7 suites still pass: 25/25 and 28/28.
+
+**Not verified here:** the real Clerk sign-in modal, because it needs real keys.
+
+### Review — Step 9: abuse and cost controls (2026-09-30)
+**What changed**
+- **C19, rate limits:** `lib/rateLimit.ts` uses fixed-window counters in MongoDB (`lib/models/RateLimit.ts`, with a TTL index), so no new infrastructure is needed. Over a limit, the response is `429` with a readable message and `Retry-After`.
+
+  | Limit | Applies to | Value |
+  |---|---|---|
+  | New guests | per IP | 20 / hour (reusing an existing guest id is never limited) |
+  | AI calls | per user or guest | 100 / hour |
+  | AI calls | per IP | 600 / hour |
+  | Interviews | per signed-in user | 20 / day |
+  | Messages | per interview | 60 (the cap from Step 6) |
+
+  - The AI limits cover `ai-chat`, `process-job`, `process-resume`, `upload-resume` and `generate-report`.
+  - The IP limits are set high because a classroom or office can share one IP. They're all in `LIMITS` if you want to change them.
+  - **How the IP is read:** `x-real-ip` first, otherwise the **last** `x-forwarded-for` entry, which is the one the nearest proxy added. The first entry can be written by the caller on proxies that append, so it's never used; the spoofing attempt is tested.
+  - **Loopback counts as unknown**, and unknown skips the IP limit (per-identity limits still apply). Next fills in the socket address when no proxy did. So without this, local dev, or a same-host proxy that doesn't forward the client IP, would put every visitor into one shared bucket: 20 new guests per hour for everyone combined. The first test run found this.
+  - **Client side:** the interview shows the limit as a notice and gives the turn back, with no spoken apology. The completion screen shows it without using up a retry. The setup page shows the message.
+- **C20, size limits:** `lib/inputLimits.ts` is shared by the setup page and the API.
+  - `process-job`: title ≤ 200 and description ≤ 10,000 characters, strings only.
+  - `create-interview`: every field is type-checked, and the mentor must exist. Summaries echoed back from the client are cut to 4,000 characters.
+  - `upload-resume`: refuses an oversized body from its declared `Content-Length` (413) before reading it, and returns 400 (not 500) when `resume` isn't a file.
+  - A failed interview save now gives the guest's one interview back.
+- **C21** was done in Step 6.
+- **C22, leaked errors:** `upload-resume` and `process-resume` no longer return `details: error.message`. It's logged on the server only.
+- **C23, resume retention:**
+  - Guests' uploads are no longer stored at all; the summary is all they need.
+  - A signed-in user's resume is stored, and the file it replaces is deleted (`resumeFileId` on the profile, with a fallback that reads the id from older URLs).
+  - The summary is made before the upload, so an AI failure can't leave an orphaned file.
+  - Appwrite is loaded only for signed-in uploads, so guest uploads work without storage configured.
+- **C24, Python sidecar** (fixed rather than removed, per your earlier "integrate later" decision):
+  - **Per-connection state.** `tracker.Models` holds the heavy models, loaded once, with a lock and one shared MediaPipe timestamp counter (VIDEO mode needs increasing timestamps per landmarker). Each connection gets its own `Pipeline` on top. `Pipeline()` with no arguments still loads its own models, so `new.py` and the tests are unchanged.
+  - **CPU work runs in a worker thread,** so one busy session doesn't block the others.
+  - **A bad frame** (not base64, not an image, too large) is reported and skipped. It used to end the whole session.
+  - **Optional `ML_ACCESS_TOKEN`:** WebSockets aren't covered by CORS. Both `render.yaml` files have Render generate a random token, and the dashboard passes `?token=` through.
+  - **Found while doing this:** `process()` inserted into `sys.path` on **every frame**, so the list grew without bound. `schema` is now imported once.
+  - The blink rate now matches the TypeScript version (B18). `on_event("startup")` became a lifespan handler.
+  - `test_pipeline.py` failed on a fresh checkout because `models/` didn't exist yet. Fixed.
+
+**Proof**
+- `lint`, `typecheck` and `build` pass. `test`: **33/33, with 0 skipped.** The browser-vs-Python emotion parity test ran here for the first time this session and passes.
+- **API end to end: 23/23.**
+  - the 21st guest from one IP → 429 with `Retry-After`, while another IP is unaffected;
+  - a spoofed first `x-forwarded-for` entry is still limited, and `x-real-ip` wins;
+  - 25 guests with no proxy header all succeed;
+  - 100 AI calls pass and the 101st → 429, while another guest is unaffected;
+  - an IP preset to 600 → 429 even for a fresh guest;
+  - the TTL index exists;
+  - every size and type cap;
+  - an unknown mentor → 400;
+  - a failed create keeps the guest's interview;
+  - a guest upload works with no storage configured;
+  - errors carry no details;
+  - 6 MB → 413, and a non-file → 400.
+- Earlier suites still pass: Step 6 25/25, Step 7 28/28, Step 8 6/6. **Browser: 9 interview scenarios pass**, including the new rate-limit one.
+- **Sidecar:**
+  - `test_pipeline.py` 3/3 and the new `test_server.py` 2/2: pipelines sharing models keep separate state; the server refuses a missing token (1008), skips bad and oversized frames, gives two simultaneous users their own readings, and keeps summaries per connection.
+  - `/api/health` answered within **6 ms** while a session was processing 30 frames at **69 ms** each.
+  - Against the **old** server, two users at once (happy face, angry face) both came back "happy". The second user got the first user's reading.
+
+**Note:** running the sidecar outside Docker needs the GL libraries its Dockerfile installs, plus `LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=swrast EGL_PLATFORM=surfaceless`.
+
+### Review — Step 10: polish, cleanup and tests (2026-09-30)
+**What changed**
+- **TypeScript `strict` is on.** It showed only 5 errors, each fixed properly:
+  - `getMentorById` now accepts a missing id;
+  - `aggregateSession`'s untyped average helper is typed;
+  - `pdf2json`'s error-callback type is matched.
+- **React strict mode is on** (development only). All 9 interview scenarios pass with and without it. The camera check is now stricter: exactly one live stream at any time, and every stream ended after camera-off and after unmount.
+- **The report page follows the theme.** It hardcoded a black background and slate text, but used theme colours for its cards and gradients. In light mode that meant a white band across the header and light-grey text on a white card (checked in a screenshot). About 45 colour classes were mapped to theme tokens. Dark mode looks the same as before, light mode is now a normal light report, and there's no overflow at 390 px.
+- **The missing animations are defined:** `blob`, `shine`, `animation-delay-*` and `direction-reverse`, respecting `prefers-reduced-motion`.
+- **Bryan's mentor id** no longer has a leading space. Old interviews still match, because `getMentorById` trims.
+- **Stale references removed:** the `/api/guest/interview-count` route in the middleware, the `.env.local` hints, and the dead `ML_BASE_URL`/`ML_WS_BASE` exports.
+- **Correction to my audit:** the two identical `InferenceSession.create` branches aren't dead code. TypeScript can't choose between the URL and bytes overloads for a union argument, so a single call fails to compile (checked). The code stays, with a comment explaining why.
+- **Added:**
+  - `app/error.tsx` and `app/not-found.tsx` (the real server returns a 404 with the new page);
+  - `'use client'` on the completion screen;
+  - `metadataBase` from `NEXT_PUBLIC_SITE_URL`, which silences the build warning;
+  - an "Emotion Demo" link in the footer (the page wasn't linked from anywhere);
+  - a note before the interview starts that camera video stays in the browser.
+- **Tests:**
+  - `lib/clientIp.ts` was split out of the rate limiter so it can be tested, with 3 tests;
+  - `lib/sessionLifecycle.test.ts` has 3 tests covering metrics from the transcript, timing clamps, and `closeSession`.
+- **CI:**
+  - the main job now also runs `next build` with placeholder keys;
+  - a new `sidecar` job installs the GL libraries, runs `test_pipeline.py` and `test_server.py`, then runs the browser parity test against their output. That test used to always skip in CI.
+- **Docs:** the README covers the "since v2.0" changes, the limits table, the new environment variables, the index check before deploying over an existing database, the sidecar token and tests, and the updated file map.
+
+**Proof (final full run)**
+- `lint`, `typecheck` (strict) and `build` pass. **`test`: 39/39, 0 skipped.**
+- **API:** Step 6 25/25, Step 7 28/28, Step 8 6/6, Step 9 23/23.
+- **Browser:**
+  - interview 9 scenarios, plus the same 9 under React strict mode;
+  - setup page 21/21;
+  - report and completion screens 9/9;
+  - interview error card 4/4.
+- **Sidecar:** `test_pipeline.py` 3/3 and `test_server.py` 2/2 (72 ms per frame; `/api/health` worst 7 ms under load).
+
+### Found while verifying (not in the audit)
+1. The unique indexes were never built (`bufferCommands: false`). Two reports were saved for one interview in a race. **The most important find.**
+2. The Start button was pushed below the fold by a full-screen placeholder.
+3. The transcript panel grew with the page instead of scrolling, which put the answer box off-screen (unreachable on mobile).
+4. The controls, the setup page and the navbar overflowed a 390 px phone.
+5. End before Start showed "Mission Accomplished" for an interview that never ran.
+6. Typed-only candidates (e.g. Firefox) were told "Speaking Time: 0 seconds" and penalised −15.
+7. The mentor step had no Back button.
+8. Drag and drop was advertised but not implemented.
+9. Back/Next re-sent unchanged input to the AI and re-uploaded the file.
+10. Rate limiting by IP would have put all no-proxy and loopback traffic into one shared bucket.
+11. The sidecar grew `sys.path` on every frame.
+12. `test_pipeline.py` failed on a fresh checkout.
+13. The report page was unreadable in light mode.
+
+### What's left (backlog, by choice rather than oversight)
+- **Product features from E, which you haven't picked yet:**
+  - an interview-history dashboard with score trends;
+  - Whisper speech-to-text;
+  - streaming replies;
+  - configurable length and interview modes;
+  - PDF export and share links;
+  - moving a guest's interview into their account on sign-up;
+  - `.docx` resumes;
+  - "delete my data".
+- **Major upgrades** (Next 16, Clerk 7, `ai` 7, Mongoose 9, zod 4, `@mediapipe/tasks-vision` 1.0). Each is a breaking change. Clerk in particular can't be verified here without real keys, so these are worth a dedicated step.
+- **Performance:**
+  - moving the camera and HUD into their own component (the page re-renders at 10 Hz). Deferred again, because nothing measured shows a problem;
+  - an int8 or self-hosted emotion model for faster first loads.
+- **Needs you:** one real interview in Chrome with real keys (real speech recognition, camera and Clerk sign-in), and the duplicate check above before deploying over existing data.

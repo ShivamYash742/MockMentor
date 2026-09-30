@@ -36,12 +36,13 @@ interface FrameRecord {
 
 export function useFaceTracker(
   videoRef: React.RefObject<HTMLVideoElement | null>,
-  sessionId: string | null,
   enabled: boolean = true,
 ) {
   const [lastFrame, setLastFrame] = useState<FaceResult | null>(null);
+  // isConnected: tracking is running right now. isTrackerReady: the face model loaded at least
+  // once (false after a load failure), so callers can tell "loading" from "unavailable".
   const [isConnected, setIsConnected] = useState(false);
-  const [isSidecarAvailable, setIsSidecarAvailable] = useState(false);
+  const [isTrackerReady, setIsTrackerReady] = useState(false);
   // Which engine produces the emotion readings: the trained model, or the blendshape fallback.
   const [emotionSource, setEmotionSource] = useState<'loading' | 'model' | 'heuristic'>('loading');
 
@@ -145,13 +146,13 @@ export function useFaceTracker(
         }
         landmarkerRef.current = landmarker;
         setIsConnected(true);
-        setIsSidecarAvailable(true);
+        setIsTrackerReady(true);
         processingStartedRef.current = false;
       } catch (err) {
         if (cancelled) return;
         console.error('FaceLandmarker init failed:', err);
         setIsConnected(false);
-        setIsSidecarAvailable(false);
+        setIsTrackerReady(false);
       }
     })();
 
@@ -162,6 +163,7 @@ export function useFaceTracker(
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
       setIsConnected(false);
+      setLastFrame(null); // no stale reading left on screen while the camera is off
     };
   }, [enabled]);
 
@@ -399,5 +401,5 @@ export function useFaceTracker(
     handTrackerRef.current = new HandTracker(8);
   }, []);
 
-  return { lastFrame, isConnected, isSidecarAvailable, emotionSource, requestSummary, resetSession };
+  return { lastFrame, isConnected, isTrackerReady, emotionSource, requestSummary, resetSession };
 }

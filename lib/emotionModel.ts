@@ -67,6 +67,7 @@ type Ort = typeof import('onnxruntime-web/wasm');
 
 /** Builds the classifier from an onnxruntime module and the model (URL or bytes). */
 export async function createEmotionClassifier(ort: Ort, model: string | Uint8Array): Promise<EmotionClassifier> {
+  // Two calls rather than one: the URL and bytes forms are separate overloads.
   const session = typeof model === 'string'
     ? await ort.InferenceSession.create(model, { executionProviders: ['wasm'] })
     : await ort.InferenceSession.create(model, { executionProviders: ['wasm'] });

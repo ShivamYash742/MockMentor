@@ -23,14 +23,12 @@ async function dbConnect() {
   }
 
   if (!cached.promise) {
-    const opts = {
-      bufferCommands: false,
-    };
-
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
-      console.log('✅ Connected to MongoDB Atlas');
+    // Mongoose's default command buffering stays on. Models are defined when their modules load,
+    // before this connection exists, and their index builds wait for it through that buffer —
+    // including the unique indexes on interviewId that keep one session and one report per
+    // interview. With `bufferCommands: false` those builds failed silently and never ran.
+    cached.promise = mongoose.connect(MONGODB_URI).then((mongoose) => {
+      console.log('✅ Connected to MongoDB');
       return mongoose;
     });
   }
@@ -48,7 +46,7 @@ async function dbConnect() {
       } else if (e.message.includes('authentication')) {
         console.error('💡 Solution: Check your MongoDB username and password');
       } else if (e.message.includes('MONGODB_URI')) {
-        console.error('💡 Solution: Set MONGODB_URI environment variable in .env.local');
+        console.error('💡 Solution: Set MONGODB_URI environment variable in .env');
       }
     }
     

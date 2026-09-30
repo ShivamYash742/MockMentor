@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { appConfig } from '@/lib/appConfig';
-import { getGuestId } from '@/lib/utils';
+import { startGuestSession } from '@/lib/guestSession';
 import { ThemeToggle } from './theme-provider';
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
 import { Button } from '@/components/ui/button';
@@ -12,25 +12,17 @@ import { Loader2, UserPlus } from 'lucide-react';
 export default function Navbar() {
   const [guestLoading, setGuestLoading] = useState(false);
 
+  const [guestError, setGuestError] = useState(false);
+
   const handleGuestLogin = async () => {
     setGuestLoading(true);
+    setGuestError(false);
     try {
-      // Reuse the existing guest id if there is one, so re-clicking doesn't reset the interview limit.
-      const response = await fetch('/api/auth/guest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ guestId: getGuestId() }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        localStorage.setItem('guestId', data.guestId);
-        window.location.href = '/interview/new';
-      } else {
-        alert('Failed to create guest session: ' + data.error);
-      }
+      await startGuestSession();
+      window.location.href = '/interview/new';
     } catch (error) {
       console.error('Guest login error:', error);
-      alert('Failed to create guest session');
+      setGuestError(true);
     } finally {
       setGuestLoading(false);
     }
@@ -39,9 +31,9 @@ export default function Navbar() {
   return (
     <nav className="">
       <div className="container mx-auto flex max-w-6xl items-center h-16 px-4">
-        <div className="mr-4 flex">
-          <Link className="mr-6 flex items-center space-x-2" href="/">
-            <span className="font-bold">{appConfig?.title}</span>
+        <div className="mr-2 sm:mr-4 flex">
+          <Link className="mr-2 sm:mr-6 flex items-center space-x-2" href="/">
+            <span className="font-bold whitespace-nowrap">{appConfig?.title}</span>
           </Link>
         </div>
 
@@ -56,6 +48,7 @@ export default function Navbar() {
                   onClick={handleGuestLogin}
                   disabled={guestLoading}
                   className="gap-2"
+                  title={guestError ? 'Could not start a guest session. Please try again.' : undefined}
                 >
                   {guestLoading ? (
                     <>
@@ -65,11 +58,19 @@ export default function Navbar() {
                   ) : (
                     <>
                       <UserPlus className="w-4 h-4" />
-                      <span>Try as Guest</span>
+                      {guestError ? (
+                        <span>Try again</span>
+                      ) : (
+                        <span>
+                          <span className="hidden sm:inline">Try as </span>Guest
+                        </span>
+                      )}
                     </>
                   )}
                 </Button>
-                <SignInButton />
+                <SignInButton>
+                  <Button variant="ghost" className="whitespace-nowrap px-2 sm:px-4">Sign in</Button>
+                </SignInButton>
               </div>
             </SignedOut>
             <SignedIn>

@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 export interface IUserProfile extends mongoose.Document {
   userId: string;
   resumeUrl?: string;
+  resumeFileId?: string; // the Appwrite file behind resumeUrl, deleted when it's replaced
   resumeSummary?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -16,6 +17,9 @@ const UserProfileSchema = new mongoose.Schema(
       unique: true,
     },
     resumeUrl: {
+      type: String,
+    },
+    resumeFileId: {
       type: String,
     },
     resumeSummary: {

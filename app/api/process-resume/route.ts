@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequester } from '@/lib/requester';
-import { summarizeAndSaveResume } from '@/lib/resumeProfile';
-
-const MAX_TEXT_CHARS = 20_000;
+import { saveResumeProfile, summarizeResume } from '@/lib/resumeProfile';
+import { INPUT_LIMITS } from '@/lib/inputLimits';
+import { aiLimits, rateLimit } from '@/lib/rateLimit';
 
 // Pasted-text path only (app/interview/new's "paste your resume" flow). File uploads go
 // through /api/upload-resume, which parses PDFs itself.
@@ -13,38 +13,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { fileUrl, fileContent, fileName } = await req.json();
+    const { fileContent } = await req.json().catch(() => ({}));
 
-    if (!fileUrl || typeof fileContent !== 'string' || !fileContent.trim()) {
+    if (typeof fileContent !== 'string' || !fileContent.trim()) {
       return NextResponse.json(
-        { error: 'File URL and content are required' },
+        { error: 'Resume text is required' },
         { status: 400 }
       );
     }
-    if (fileContent.length > MAX_TEXT_CHARS) {
+    if (fileContent.length > INPUT_LIMITS.resumeChars) {
       return NextResponse.json(
-        { error: `Resume text is too long (max ${MAX_TEXT_CHARS} characters)` },
+        { error: `Resume text is too long (max ${INPUT_LIMITS.resumeChars.toLocaleString('en-US')} characters)` },
         { status: 400 }
       );
     }
 
-    const { resumeSummary, userProfile } = await summarizeAndSaveResume(fileContent, fileUrl, requester);
+    const limited = await rateLimit(aiLimits(req, requester));
+    if (limited) return limited;
+
+    const resumeSummary = await summarizeResume(fileContent);
+    // Guests have no profile to save to; the summary goes back to the client for this interview.
+    const userProfile = requester.userId
+      ? (await saveResumeProfile(requester.userId, resumeSummary)).userProfile
+      : null;
 
     return NextResponse.json({
       success: true,
-      fileUrl,
       resumeSummary,
       userProfile,
-      fileName,
       extractedTextLength: fileContent.length,
     });
   } catch (error) {
+    // Details stay in the server log; they used to be sent to the client.
     console.error('Error processing resume:', error);
     return NextResponse.json(
-      {
-        error: 'Failed to process resume',
-        details: error instanceof Error ? error.message : String(error),
-      },
+      { error: 'Failed to process your resume. Please try again.' },
       { status: 500 }
     );
   }

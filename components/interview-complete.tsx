@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useState, useEffect } from 'react';
 import { CheckCircle, ArrowRight, Loader2, Sparkles, AlertTriangle, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -20,6 +22,8 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
   const [reportGenerated, setReportGenerated] = useState(hasReport);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  // The candidate never answered, so the server has nothing to grade (and won't spend an AI call).
+  const [nothingToGrade, setNothingToGrade] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowAnimation(true), 200);
@@ -42,6 +46,10 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
       const data = await response.json();
       if (data.success) {
         setReportGenerated(true);
+      } else if (data.error === 'no_answers') {
+        setNothingToGrade(true);
+      } else if (data.error === 'rate_limit') {
+        setError(data.message); // a wait, not a failure: doesn't use up a retry
       } else {
         throw new Error(data.error || 'Report generation failed');
       }
@@ -50,7 +58,7 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
       setRetryCount(prev => prev + 1);
       setError(
         retryCount + 1 >= MAX_RETRIES
-          ? 'Report generation failed after multiple attempts. Please try again later from the dashboard.'
+          ? 'Report generation failed after multiple attempts. Please come back to this page and try again later.'
           : `Report generation failed. ${MAX_RETRIES - retryCount - 1} retries remaining.`
       );
     } finally {
@@ -91,6 +99,13 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
             </div>
           </div>
 
+          {nothingToGrade && (
+            <p role="status" className="text-center text-muted-foreground">
+              You didn&apos;t answer any questions in this interview, so there&apos;s nothing to grade.
+              Start a new interview to practice.
+            </p>
+          )}
+
           {/* Error State */}
           {error && (
             <div
@@ -123,7 +138,7 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
               showAnimation ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0'
             }`}
           >
-            {!reportGenerated && interviewId && sessionId && !error && (
+            {!reportGenerated && !nothingToGrade && interviewId && sessionId && !error && (
               <Button 
                 size="lg" 
                 onClick={generateReport}
@@ -161,7 +176,7 @@ const InterviewComplete: React.FC<InterviewCompleteProps> = ({ interviewId, sess
             
             <Button size="lg" variant="outline" asChild className="w-full sm:w-auto h-14 px-8 border-border/60 hover:bg-muted/50 backdrop-blur-sm transition-all active:scale-95">
               <Link href="/interview/new">
-                Back to Dashboard
+                Start a new interview
               </Link>
             </Button>
           </div>
