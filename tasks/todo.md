@@ -963,7 +963,7 @@ The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq
 
 ## Plan: MockMentor as a desktop app on Windows and Linux (2026-09-30)
 
-> **Status: plan only, no code changed.** Waiting for your answers to the questions at the end, and your go-ahead.
+> **Status: superseded by the revised plan below, which uses your decisions (2026-09-30).** Kept for the reasoning (constraints and options).
 
 ### The short version
 Build a small **Electron** app that opens the hosted MockMentor website in its own window, the way Slack, Discord and Notion desktop apps work. Ship it as a Windows installer and as Linux AppImage and `.deb` packages, updating itself from GitHub Releases. Two changes to the web app make voice work inside it:
@@ -1064,3 +1064,107 @@ Phase 0 → 1 → 2 → 3 → 4 (optional) → 5. That's about **8–12 working 
 4. **Windows signing:** ship unsigned first, or get a certificate now?
 5. **Linux formats:** AppImage and `.deb` *(recommended)*, or also `.rpm`, Flatpak or Snap?
 6. **Google sign-in in the desktop app:** needed for the first release (Phase 4), or later?
+
+## Revised desktop plan, with your decisions (2026-09-30)
+
+> **Status: plan only, no code changed.** Waiting for the Vercel URL and your go-ahead to start Phase 0.
+
+### Your decisions
+| Question | Your answer | What it changes |
+|---|---|---|
+| Hosting | Vercel | The app's window loads the Vercel site |
+| Order | Go straight to Electron | The installable-web-app step is dropped |
+| Speech-to-text | OpenAI's **small** Whisper model, **run locally** | Replaces cloud Whisper. The desktop app runs **whisper.cpp** with the `small.en` model on the user's own CPU. Audio never leaves the computer, where Chrome's built-in recognition sends it to Google |
+| Windows signing | Unsigned at first | Users see SmartScreen's "Windows protected your PC" warning and click "More info → Run anyway". Documented |
+| Linux formats | **AppImage + .rpm** | No `.deb`. The `.rpm` suits Fedora and openSUSE; the AppImage runs anywhere |
+| Sign-in | The app opens the system browser, and the user signs in there | Google sign-in works, because it runs in a real browser. This is part of v1 now |
+
+### How it will work
+- **The app window** loads the Vercel site: interview, camera, emotion model and reports, exactly as on the web. The server and its secrets stay on Vercel.
+- **Voice input:**
+  - The page records the microphone at 16 kHz and finds where speech starts and stops from the audio level. It keeps today's rules (a 3 s pause ends an answer, a 10 s silence gets a check-in) and today's real timing.
+  - When an answer ends, the page hands the audio to the app, which sends it to a bundled **whisper-server** (whisper.cpp) running on `127.0.0.1`.
+  - The text comes back and goes into the normal interview flow.
+  - To keep the wait short, longer answers are transcribed in pieces while the candidate is still talking.
+- **The same website runs in both places.** The local-Whisper path turns on only inside the desktop app (it checks for the app's small preload API). Chrome and Edge users keep today's browser recognition, and Firefox and Safari users still type.
+- **The Whisper model** (`ggml-small.en`) downloads on first use, with a progress bar. It's checked against a pinned SHA-256 and kept in the app's data folder. The Phase 0 benchmark picks between:
+  - the compressed version (`q5_1`, about 180 MB, faster);
+  - the full version (about 466 MB).
+- **Sign-in through the browser** (no deep links needed, so it also works for an AppImage that was never "installed"):
+  1. The app creates a random `state` and opens the system browser at `<site>/desktop/sign-in?state=…`.
+  2. The user signs in there any way they like, including Google. The page then asks the server for a one-time Clerk sign-in token (single use, 60 s), stored against that `state`.
+  3. Meanwhile the app polls `<site>/api/desktop/ticket?state=…`, collects the token once, and signs its own window in with it (Clerk's `ticket` sign-in).
+  4. Guest mode keeps working inside the app, and "Sign out" in the app menu clears the app's session.
+- **Voices:** Windows has built-in voices. The `.rpm` requires `speech-dispatcher`. The AppImage can't declare dependencies, so when a machine has no voices, the interviewer's words appear as on-screen captions and the transcript opens.
+
+### What I checked for this revision
+- **whisper.cpp** builds here from source (commit `6e4ab85`), and its `whisper-server` has an `/inference` endpoint that takes WAV audio and returns JSON.
+- **Portable build:** the default build is tuned to the build machine's CPU, which can crash on users' older CPUs. This version supports `GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS`, which picks the right CPU variant at runtime. The release builds will use that.
+- **Clerk:** the installed `@clerk/backend` has `signInTokens.createSignInToken`, which the browser sign-in needs.
+- **Not measured yet: Whisper's speed.** This environment's network policy blocks Hugging Face and OpenAI's model host, so I couldn't download a model. Phase 0 measures it where the internet is open.
+
+### Phases
+**Phase 0: benchmark and spike (about 1 day).**
+- A manually triggered GitHub Actions workflow:
+  - builds whisper.cpp (portable) on Windows and Linux;
+  - downloads `small.en` (full and `q5_1`);
+  - times 10 s, 30 s and 60 s of speech on GitHub's 4-core runners, a fair stand-in for an ordinary laptop.
+- **Target:** under about 2 s of wait after a 30 s answer, counting the piece-by-piece transcription. If `small` misses it on slower machines, the fallback is a "faster, less accurate" setting that uses `base.en`.
+- A bare Electron window on your Windows and Linux machines: camera, microphone, voices, face tracking and the emotion model.
+
+**Phase 1: web app changes (deployed to Vercel) (3–4 days).**
+- **Speech engine:**
+  - a second speech-to-text engine in `hooks/useSpeechToText.ts`, used when the desktop API is present: 16 kHz capture, speech detection, piece-by-piece hand-off, and the same interface as today;
+  - unit tests for the speech detection;
+  - browser tests that play a recorded WAV as the microphone.
+- **Captions** for the interviewer when there are no voices (and an "always on" option).
+- **Desktop sign-in:**
+  - `/desktop/sign-in` (signs in, then fetches the token for `state`);
+  - `/api/desktop/ticket` (creates the token for a signed-in user, and hands it over exactly once to whoever holds `state`, with a 5-minute expiry held in MongoDB);
+  - `/desktop/complete` (signs the app's window in with the token);
+  - rate-limited like the other routes.
+
+**Phase 2: the Electron app (`desktop/`, its own `package.json`) (3–4 days).**
+- The window loads the Vercel URL, set at build time and overridable for testing.
+- A persistent session, context isolation, sandbox, and no Node.js in the page.
+- The preload exposes only `isDesktop`, `version`, `transcribe(audio)` and `signIn()`.
+- Navigation is limited to the site and Clerk; other links open in the default browser. Camera and microphone are allowed only for the site.
+- An offline page with Retry, a single instance, a remembered window size, and a small menu (Reload, Zoom, Full screen, Sign out, Check for updates, About).
+- **whisper-server lifecycle:**
+  - started on demand, on a random `127.0.0.1` port, with a sensible thread count;
+  - restarted if it crashes, and stopped on quit.
+- **Model download** with progress, the checksum, retry, and a "delete downloaded model" option.
+- The browser sign-in flow (open, poll, then sign in).
+- **Tests:** Playwright drives the built app under a virtual display, against a local server.
+  - the window loads;
+  - other sites are blocked and permissions are limited;
+  - the offline page works;
+  - sign-in completes against a fake ticket endpoint;
+  - transcription runs through a stand-in whisper-server.
+
+**Phase 3: packaging and releases (about 2 days).**
+- **electron-builder:**
+  - Windows: an unsigned NSIS installer (per-user, with Start menu and desktop shortcuts, and an uninstaller);
+  - Linux: an AppImage, plus an `.rpm` that requires `speech-dispatcher`.
+- **whisper.cpp binaries** are built per OS in CI and shipped inside the app.
+- **On a version tag, GitHub Actions:**
+  - builds Windows and Linux;
+  - launches each build once as a smoke test;
+  - publishes a GitHub Release with checksums.
+- **Updates:**
+  - the Windows installer and the AppImage update themselves (`electron-updater`);
+  - the `.rpm` shows "a new version is available" with a download link (a dnf repository can come later).
+- **A download section** on the site that detects Windows or Linux.
+- **README:** install steps and troubleshooting.
+  - the SmartScreen warning;
+  - Windows camera and microphone privacy settings;
+  - `chmod +x` for the AppImage;
+  - `speech-dispatcher` on Linux.
+
+**Total: about 9–11 working days.** The website keeps working as it does today throughout.
+
+### Still needed from you
+1. **The exact Vercel URL.** Also, is there a custom domain? Clerk's production setup needs a domain you own (it can't run on `*.vercel.app`). On a `vercel.app` address Clerk stays a development instance: fine for testing, but get a domain before a public release.
+2. **May I add the Phase 0 benchmark as a manually run GitHub Actions workflow?** It's a new file under `.github/workflows/`.
+3. **The Whisper model:** download on first use (my default, keeps the installer small), or include it in the installer (about 180–466 MB bigger, works without that first download)?
+4. **Go-ahead to start Phase 0.**
