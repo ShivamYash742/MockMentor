@@ -7,7 +7,9 @@ import type { Requester } from './requester';
 
 // Shared by upload-resume (file) and process-resume (pasted text): summarize the resume
 // text with Groq, and save it to the signed-in user's profile (guests have no profile to save to).
-export async function summarizeAndSaveResume(rawText: string, fileUrl: string, requester: Requester) {
+// fileUrl is only set for an uploaded file; pasted text keeps whatever file the profile had
+// (it used to overwrite it with the string "text-input").
+export async function summarizeAndSaveResume(rawText: string, fileUrl: string | null, requester: Requester) {
   const prompt = getResumeSummaryPrompt(truncateForAI(rawText));
   const { text: resumeSummary } = await generateWithGroq(prompt);
 
@@ -16,7 +18,7 @@ export async function summarizeAndSaveResume(rawText: string, fileUrl: string, r
   if (requester.userId) {
     userProfile = await UserProfile.findOneAndUpdate(
       { userId: requester.userId },
-      { resumeUrl: fileUrl, resumeSummary },
+      { resumeSummary, ...(fileUrl ? { resumeUrl: fileUrl } : {}) },
       { upsert: true, new: true }
     );
   }

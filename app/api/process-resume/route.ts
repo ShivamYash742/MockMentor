@@ -13,11 +13,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { fileUrl, fileContent, fileName } = await req.json();
+    const { fileContent } = await req.json().catch(() => ({}));
 
-    if (!fileUrl || typeof fileContent !== 'string' || !fileContent.trim()) {
+    if (typeof fileContent !== 'string' || !fileContent.trim()) {
       return NextResponse.json(
-        { error: 'File URL and content are required' },
+        { error: 'Resume text is required' },
         { status: 400 }
       );
     }
@@ -28,14 +28,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { resumeSummary, userProfile } = await summarizeAndSaveResume(fileContent, fileUrl, requester);
+    const { resumeSummary, userProfile } = await summarizeAndSaveResume(fileContent, null, requester);
 
     return NextResponse.json({
       success: true,
-      fileUrl,
       resumeSummary,
       userProfile,
-      fileName,
       extractedTextLength: fileContent.length,
     });
   } catch (error) {

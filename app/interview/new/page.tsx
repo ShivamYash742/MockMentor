@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { SignInButton, useAuth } from '@clerk/nextjs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
@@ -13,22 +14,48 @@ import {
   Loader2,
   User,
   AlertCircle,
+  UserPlus,
 } from 'lucide-react';
 
 import Navbar from '@/components/navbar';
 import { cn, guestHeaders } from '@/lib/utils';
 import { mentors } from '@/components/mentors';
+import { checkStoredGuest, startGuestSession } from '@/lib/guestSession';
 
 interface UserProfile {
   resumeUrl?: string;
   resumeSummary?: string;
 }
 
+// Who is setting up the interview. Every API call below needs a signed-in user or a known guest,
+// so without one the page asks first instead of failing each step with a vague 401.
+type Identity = 'checking' | 'none' | 'user' | 'guest' | 'guest-used';
+
+// Mirror the server's limits so problems show up before anything is uploaded.
+const MAX_RESUME_BYTES = 5 * 1024 * 1024;
+const MAX_RESUME_CHARS = 20_000;
+const MAX_JOB_TITLE_CHARS = 200;
+const MAX_JOB_DESCRIPTION_CHARS = 10_000;
+
+// Reads the error message from a failed API response, whatever shape it came back in.
+async function responseError(response: Response, fallback: string): Promise<string> {
+  const data = await response.json().catch(() => null);
+  return (data && (data.error || data.message)) || `${fallback} (error ${response.status})`;
+}
+
 export default function NewInterviewPage() {
   const router = useRouter();
+  const { isLoaded: authLoaded, isSignedIn } = useAuth();
+  const [identity, setIdentity] = useState<Identity>('checking');
+  const [guestStarting, setGuestStarting] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [fetchLoading, setFetchLoading] = useState(true);
+  // What was last sent to the AI, so going Back and then Next again doesn't re-send (and pay
+  // for) an unchanged resume or job description.
+  const [processedResumeKey, setProcessedResumeKey] = useState<string | null>(null);
+  const [processedJobKey, setProcessedJobKey] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -47,18 +74,50 @@ export default function NewInterviewPage() {
   // Step 3: Mentor Selection
   const [selectedMentor, setSelectedMentor] = useState<string | null>(null);
 
-  // Fetch existing user profile on mount
+  // Work out who this is: a signed-in user (load their saved resume), a guest with an interview
+  // left, a guest who has used theirs, or nobody yet.
   useEffect(() => {
-    fetchUserProfile();
-  }, []);
+    if (!authLoaded) return;
+    let cancelled = false;
+    (async () => {
+      if (isSignedIn) {
+        setIdentity('user');
+        await fetchUserProfile();
+        return;
+      }
+      try {
+        const guest = await checkStoredGuest();
+        if (cancelled) return;
+        setIdentity(!guest ? 'none' : guest.canStartInterview ? 'guest' : 'guest-used');
+      } catch (error) {
+        console.error('Error checking guest session:', error);
+        if (!cancelled) setIdentity('none');
+      } finally {
+        if (!cancelled) setFetchLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [authLoaded, isSignedIn]);
+
+  const handleStartGuest = async () => {
+    setGuestStarting(true);
+    setErrorMessage(null);
+    try {
+      const guest = await startGuestSession();
+      setIdentity(guest.canStartInterview ? 'guest' : 'guest-used');
+    } catch (error) {
+      console.error('Guest login error:', error);
+      setErrorMessage('Could not start a guest session. Please try again.');
+    } finally {
+      setGuestStarting(false);
+    }
+  };
 
   const fetchUserProfile = async () => {
     try {
       setFetchLoading(true);
       const response = await fetch('/api/user-profile');
-      if (response.status === 401) {
-        return; // Guest user or unauthorized
-      }
+      if (!response.ok) return;
       const data = await response.json();
 
       if (data.success && data.userProfile) {
@@ -75,12 +134,31 @@ export default function NewInterviewPage() {
     }
   };
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
-      setUseExistingResume(false);
+  const chooseFile = (file: File | undefined) => {
+    if (!file) return;
+    setErrorMessage(null);
+    const name = file.name.toLowerCase();
+    if (!name.endsWith('.pdf') && !name.endsWith('.txt')) {
+      setErrorMessage('Only PDF and TXT resumes are supported.');
+      return;
     }
+    if (file.size > MAX_RESUME_BYTES) {
+      setErrorMessage('That file is too large. The limit is 5MB.');
+      return;
+    }
+    setSelectedFile(file);
+    setUseExistingResume(false);
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    chooseFile(event.target.files?.[0]);
+  };
+
+  // The drop zone said "drag it here" but had no drop handling.
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragActive(false);
+    chooseFile(event.dataTransfer.files?.[0]);
   };
 
   const triggerFileInput = () => {
@@ -103,32 +181,21 @@ export default function NewInterviewPage() {
           'Content-Type': 'application/json',
           ...guestHeaders(),
         },
-        body: JSON.stringify({
-          fileUrl: 'text-input',
-          fileContent: resumeText,
-          fileName: 'resume.txt',
-        }),
+        body: JSON.stringify({ fileContent: resumeText }),
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('API error response:', errorText);
-        throw new Error('Failed to process resume text');
+        setErrorMessage(await responseError(response, 'Failed to process your resume'));
+        return false;
       }
 
       const data = await response.json();
-
-      if (data.success) {
-        setResumeSummary(data.resumeSummary);
-        setUserProfile(data.userProfile);
-        return true;
-      } else {
-        setErrorMessage('Failed to process resume: ' + (data.details || data.error));
-        return false;
-      }
+      setResumeSummary(data.resumeSummary);
+      if (data.userProfile) setUserProfile(data.userProfile);
+      return true;
     } catch (error) {
       console.error('Error processing resume text:', error);
-      setErrorMessage('Failed to process resume text');
+      setErrorMessage('Failed to process your resume. Please check your connection and try again.');
       return false;
     } finally {
       setLoading(false);
@@ -152,34 +219,20 @@ export default function NewInterviewPage() {
         body: formData,
       });
 
-      // Check if response is OK before parsing JSON
+      // The server's message (e.g. "File is too large (max 5MB)"). The old code threw it inside
+      // a try whose own catch replaced it with the raw response body.
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('API error response:', errorText);
-        
-        // Try to parse as JSON for detailed error
-        try {
-          const errorData = JSON.parse(errorText);
-          throw new Error(errorData.details || errorData.error || errorText);
-        } catch {
-          throw new Error(`Server error: ${response.status} - ${errorText}`);
-        }
+        setErrorMessage(await responseError(response, 'Failed to upload your resume'));
+        return false;
       }
 
       const data = await response.json();
-
-      if (data.success) {
-        setResumeSummary(data.resumeSummary);
-        setUserProfile(data.userProfile);
-        return true;
-      } else {
-        setErrorMessage('Failed to process resume: ' + (data.details || data.error));
-        return false;
-      }
+      setResumeSummary(data.resumeSummary);
+      if (data.userProfile) setUserProfile(data.userProfile);
+      return true;
     } catch (error) {
       console.error('Error uploading resume:', error);
-      const message = error instanceof Error ? error.message : 'Failed to upload resume';
-      setErrorMessage(message);
+      setErrorMessage('Failed to upload your resume. Please check your connection and try again.');
       return false;
     } finally {
       setLoading(false);
@@ -208,18 +261,17 @@ export default function NewInterviewPage() {
         }),
       });
 
-      const data = await response.json();
-
-      if (data.success) {
-        setJobSummary(data.jobSummary);
-        return true;
-      } else {
-        setErrorMessage('Failed to process job details: ' + data.error);
+      if (!response.ok) {
+        setErrorMessage(await responseError(response, 'Failed to process the job details'));
         return false;
       }
+
+      const data = await response.json();
+      setJobSummary(data.jobSummary);
+      return true;
     } catch (error) {
       console.error('Error processing job details:', error);
-      setErrorMessage('Failed to process job details');
+      setErrorMessage('Failed to process the job details. Please check your connection and try again.');
       return false;
     } finally {
       setLoading(false);
@@ -256,17 +308,20 @@ export default function NewInterviewPage() {
         }),
       });
 
-      const data = await response.json();
-
-      if (data.success) {
-        // Redirect to interview page
-        router.push(`/interview/${data?.interview?._id}`);
-      } else {
-        setErrorMessage('Failed to create interview: ' + data.error);
+      if (!response.ok) {
+        // The guest used their one interview in another tab since this page loaded.
+        if (response.status === 403 && identity === 'guest') setIdentity('guest-used');
+        setErrorMessage(await responseError(response, 'Failed to create the interview'));
+        setLoading(false); // it used to stay spinning forever after a failed request
+        return;
       }
+
+      const data = await response.json();
+      // Stays "Starting..." while the interview page loads.
+      router.push(`/interview/${data.interview._id}`);
     } catch (error) {
       console.error('Error creating interview:', error);
-      setErrorMessage('Failed to create interview');
+      setErrorMessage('Failed to create the interview. Please check your connection and try again.');
       setLoading(false);
     }
   };
@@ -275,16 +330,27 @@ export default function NewInterviewPage() {
     setErrorMessage(null);
     if (currentStep === 1) {
       // Step 1: Resume processing
+      const resumeKey = uploadMethod === 'text'
+        ? `text:${resumeText.trim()}`
+        : selectedFile ? `file:${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}` : null;
       if (useExistingResume && resumeSummary) {
         setCurrentStep(2);
+      } else if (resumeKey && resumeKey === processedResumeKey && resumeSummary) {
+        setCurrentStep(2); // unchanged since it was last summarized
       } else if (uploadMethod === 'text' && resumeText.trim()) {
+        if (resumeText.length > MAX_RESUME_CHARS) {
+          setErrorMessage(`Resume text is too long (max ${MAX_RESUME_CHARS.toLocaleString()} characters).`);
+          return;
+        }
         const success = await processResumeText();
         if (success) {
+          setProcessedResumeKey(resumeKey);
           setCurrentStep(2);
         }
       } else if (uploadMethod === 'file' && selectedFile) {
         const success = await uploadResume();
         if (success) {
+          setProcessedResumeKey(resumeKey);
           setCurrentStep(2);
         }
       } else {
@@ -292,17 +358,57 @@ export default function NewInterviewPage() {
       }
     } else if (currentStep === 2) {
       // Step 2: Job processing
+      const jobKey = `${jobTitle.trim()}\n${jobDescription.trim()}`;
+      if (jobKey === processedJobKey && jobSummary) {
+        setCurrentStep(3);
+        return;
+      }
       const success = await processJobDetails();
       if (success) {
+        setProcessedJobKey(jobKey);
         setCurrentStep(3);
       }
     }
   };
 
-  if (fetchLoading) {
+  if (fetchLoading || identity === 'checking') {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-10 h-10 animate-spin" />
+        <Loader2 className="w-10 h-10 animate-spin" aria-label="Loading" />
+      </div>
+    );
+  }
+
+  if (identity === 'none' || identity === 'guest-used') {
+    return (
+      <div className="min-h-screen bg-background p-4">
+        <Navbar />
+        <div className="max-w-md mx-auto mt-12">
+          <Card className="p-6 text-center space-y-4">
+            <h1 className="text-2xl font-bold text-foreground">
+              {identity === 'none' ? 'Set up your mock interview' : "You've used your free guest interview"}
+            </h1>
+            <p className="text-muted-foreground">
+              {identity === 'none'
+                ? 'Sign in to save your resume and keep your reports, or try one interview as a guest.'
+                : 'Sign in to keep practicing. Your account can take as many interviews as you like.'}
+            </p>
+            {errorMessage && (
+              <p role="alert" className="text-sm text-destructive">{errorMessage}</p>
+            )}
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <SignInButton mode="modal">
+                <Button>Sign in</Button>
+              </SignInButton>
+              {identity === 'none' && (
+                <Button variant="outline" onClick={handleStartGuest} disabled={guestStarting} className="gap-2">
+                  {guestStarting ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                  Try as Guest
+                </Button>
+              )}
+            </div>
+          </Card>
+        </div>
       </div>
     );
   }
@@ -322,7 +428,7 @@ export default function NewInterviewPage() {
 
         {/* Progress Steps */}
         <div className="flex justify-center mb-8">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 sm:space-x-4">
             <div
               className={`flex items-center space-x-2 ${
                 currentStep >= 1 ? 'text-primary' : 'text-muted-foreground'
@@ -337,10 +443,10 @@ export default function NewInterviewPage() {
               >
                 {currentStep > 1 ? <CheckCircle className="w-5 h-5" /> : '1'}
               </div>
-              <span className="text-sm font-medium">Resume</span>
+              <span className="hidden sm:inline text-sm font-medium">Resume</span>
             </div>
             <div
-              className={`w-8 h-px ${
+              className={`w-4 sm:w-8 h-px ${
                 currentStep >= 2 ? 'bg-primary' : 'bg-muted'
               }`}
             />
@@ -358,10 +464,10 @@ export default function NewInterviewPage() {
               >
                 {currentStep > 2 ? <CheckCircle className="w-5 h-5" /> : '2'}
               </div>
-              <span className="text-sm font-medium">Job Details</span>
+              <span className="hidden sm:inline text-sm font-medium">Job Details</span>
             </div>
             <div
-              className={`w-8 h-px ${
+              className={`w-4 sm:w-8 h-px ${
                 currentStep >= 3 ? 'bg-primary' : 'bg-muted'
               }`}
             />
@@ -379,7 +485,7 @@ export default function NewInterviewPage() {
               >
                 3
               </div>
-              <span className="text-sm font-medium">Start Interview</span>
+              <span className="hidden sm:inline text-sm font-medium">Start Interview</span>
             </div>
           </div>
         </div>
@@ -454,11 +560,19 @@ export default function NewInterviewPage() {
                   </div>
 
                   {uploadMethod === 'file' ? (
-                    <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center">
+                    <div
+                      className={cn(
+                        'border-2 border-dashed rounded-lg p-8 text-center transition-colors',
+                        dragActive ? 'border-primary bg-primary/5' : 'border-muted-foreground/25'
+                      )}
+                      onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                      onDragLeave={() => setDragActive(false)}
+                      onDrop={handleDrop}
+                    >
                       <Upload className="w-8 h-8 mx-auto text-muted-foreground mb-4" />
                       <div className="space-y-2">
                         <p className="text-sm text-muted-foreground">
-                          Choose a file or drag it here
+                          Choose a file or drag it here (PDF or TXT, up to 5MB)
                         </p>
                         <input
                           type="file"
@@ -483,10 +597,12 @@ export default function NewInterviewPage() {
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      <label className="block text-sm font-medium">
+                      <label htmlFor="resume-text" className="block text-sm font-medium">
                         Paste Your Resume Text
                       </label>
                       <textarea
+                        id="resume-text"
+                        maxLength={MAX_RESUME_CHARS}
                         className="w-full min-h-[200px] px-3 py-2 border border-input rounded-md bg-background text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         placeholder="Paste your resume content here...\n\nInclude your experience, skills, education, etc."
                         value={resumeText}
@@ -494,6 +610,7 @@ export default function NewInterviewPage() {
                       />
                       <p className="text-xs text-muted-foreground">
                         Tip: Copy and paste your resume text for quick processing
+                        ({resumeText.length.toLocaleString()} / {MAX_RESUME_CHARS.toLocaleString()} characters)
                       </p>
                     </div>
                   )}
@@ -526,10 +643,12 @@ export default function NewInterviewPage() {
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium mb-2">
+                  <label htmlFor="job-title" className="block text-sm font-medium mb-2">
                     Job Title *
                   </label>
                   <Input
+                    id="job-title"
+                    maxLength={MAX_JOB_TITLE_CHARS}
                     placeholder="e.g., Senior Software Engineer"
                     value={jobTitle}
                     onChange={(e) => setJobTitle(e.target.value)}
@@ -537,10 +656,12 @@ export default function NewInterviewPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">
+                  <label htmlFor="job-description" className="block text-sm font-medium mb-2">
                     Job Description
                   </label>
                   <textarea
+                    id="job-description"
+                    maxLength={MAX_JOB_DESCRIPTION_CHARS}
                     className="w-full min-h-[120px] px-3 py-2 border border-input rounded-md bg-background text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     placeholder="Paste the job description here for more targeted interview questions..."
                     value={jobDescription}
@@ -572,10 +693,13 @@ export default function NewInterviewPage() {
 
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 {mentors.map((mentor) => (
-                  <div
+                  <button
+                    type="button"
                     key={mentor.id}
+                    aria-pressed={selectedMentor === mentor.id}
+                    aria-label={`${mentor.name}, ${mentor.role}`}
                     className={cn(
-                      'relative cursor-pointer rounded-lg border-2 p-3 transition-all hover:shadow-md',
+                      'relative cursor-pointer rounded-lg border-2 p-3 text-left transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       selectedMentor === mentor.id
                         ? 'border-primary bg-primary/5'
                         : 'border-muted hover:border-primary/50'
@@ -591,13 +715,14 @@ export default function NewInterviewPage() {
                         />
                       </div>
                       <p className="font-medium text-center">{mentor.name}</p>
+                      <p className="text-xs text-muted-foreground text-center">{mentor.role}</p>
                     </div>
                     {selectedMentor === mentor.id && (
                       <div className="absolute top-2 right-2">
                         <CheckCircle className="w-5 h-5 text-primary" />
                       </div>
                     )}
-                  </div>
+                  </button>
                 ))}
               </div>
 
@@ -644,6 +769,15 @@ export default function NewInterviewPage() {
                   </Button>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* The last step had no way back to fix the job details. */}
+          {currentStep === 3 && (
+            <div className="flex justify-start mt-6">
+              <Button variant="outline" onClick={() => setCurrentStep(2)} disabled={loading}>
+                Back
+              </Button>
             </div>
           )}
 

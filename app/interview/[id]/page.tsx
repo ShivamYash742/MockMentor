@@ -41,11 +41,15 @@ export default function InterviewPage() {
     try {
       setLoading(true);
       const response = await fetch(`/api/interview/${interviewId}`, { headers: guestHeaders() });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (data.success) {
         setInterview(data.interview);
         setError(null);
+      } else if (response.status === 401) {
+        setError('This interview belongs to a signed-in account or a guest session in another browser. Sign in with the account you used, or open it in the browser where you started it.');
+      } else if (response.status === 404) {
+        setError("We couldn't find this interview. It may belong to a different account.");
       } else {
         setError(data.error || 'Failed to fetch interview');
       }
@@ -74,10 +78,16 @@ export default function InterviewPage() {
         <Card className="p-8 max-w-md w-full text-center">
           <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
           <h2 className="text-xl font-semibold mb-2">Error</h2>
-          <p className="text-gray-600 mb-4">{error}</p>
-          <Button onClick={fetchInterview} variant="outline">
-            <Link href="/interview/new">Start New Interview</Link>
-          </Button>
+          <p className="text-muted-foreground mb-4">{error}</p>
+          {/* Two separate actions: a <Link> inside <Button onClick={fetchInterview}> did both. */}
+          <div className="flex flex-col sm:flex-row gap-2 justify-center">
+            <Button onClick={fetchInterview} variant="outline">
+              Try again
+            </Button>
+            <Button asChild>
+              <Link href="/interview/new">Start a new interview</Link>
+            </Button>
+          </div>
         </Card>
       </div>
     );
@@ -89,7 +99,7 @@ export default function InterviewPage() {
         <Card className="p-8 max-w-md w-full text-center">
           <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
           <h2 className="text-xl font-semibold mb-2">Interview Not Found</h2>
-          <p className="text-gray-600">
+          <p className="text-muted-foreground">
             The requested interview could not be found.
           </p>
         </Card>

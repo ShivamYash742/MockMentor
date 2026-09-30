@@ -681,7 +681,7 @@ How I verified: I ran the real `useSpeechToText` hook, an exact copy of the came
 ### Proposed order (one step at a time, checking in after each)
 - [x] **Step 6: live interview:** A1, A2, A5, A6, A7, A8, plus message order and ids from D.
 - [x] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
-- [ ] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
+- [x] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
 - [ ] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
 - [ ] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
 - The ideas in E stay a backlog until you choose some.
@@ -798,3 +798,35 @@ The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq
   - AI down → 503 with nothing saved, then a retry works.
 - Step 6's suite still passes (25/25), plus **5 parallel starts → one session**.
 - **Browser:** the report page with legacy `{ questionSnapshots }`-only data and with partial data renders without errors. "Not generated yet" links back. The completion screen explains nothing-to-grade and hides Generate and Retry. The 8 interview scenarios still pass.
+
+### Review — Step 8: setup and onboarding (2026-09-30)
+**What changed**
+- **A11 and A12, who is setting up:** `/interview/new` now works out who the visitor is before showing the wizard.
+  - A signed-in user sees the wizard, with their saved resume.
+  - A guest with an interview left sees the wizard.
+  - Nobody yet: "Sign in, or try one interview as a guest", with both buttons right there. The landing page's "Start Interview" used to lead into a wizard where every step failed with a 401.
+  - A guest who has used their interview is told so up front, with a Sign in button. This used to happen only at the last step, after two AI calls.
+  - A stale stored guest id (e.g. after a database reset) is cleared, so the visitor gets a fresh start instead of 401s.
+  - The shared helper is `lib/guestSession.ts`. The navbar uses it too, and shows "Try again" instead of an `alert()` when it fails.
+- **A9:** a failed "Start Interview" resets the button and shows the server's reason. A guest who hit the limit in another tab is switched to the "you've used your interview" screen.
+- **A10:** every step shows the server's message, e.g. "File is too large (max 5MB)", instead of the raw JSON the old nested `try/catch` produced.
+- **C23 (part):** pasted resume text no longer overwrites a signed-in user's saved resume link with the string `"text-input"`. `process-resume` no longer takes or echoes a `fileUrl`.
+- **Error card on `/interview/[id]`:** the `<Link>` is no longer nested in a `<Button onClick={fetchInterview}>`, which did both on one click. There are now two buttons, "Try again" and "Start a new interview". A 401 or 404 gets a plain explanation.
+- The "dashboard" wording was fixed in Step 7.
+- **Found while doing this step:**
+  - **The mentor step had no Back button,** so you couldn't go back and fix the job details. Added.
+  - **"Choose a file or drag it here" had no drag and drop.** Dropping now works, with a highlighted drop zone.
+  - **Going Back and then Next re-sent an unchanged resume and job description to the AI,** and re-uploaded the file each time. Unchanged input is now skipped. Changed input is sent again.
+  - **The file type and 5 MB size are checked before uploading.** Inputs have the server's length limits, and pasted text shows a live character count.
+  - **Labels are tied to their inputs.** Mentor cards are real buttons (keyboard and `aria-pressed`) and show the mentor's role.
+  - **Phone layout:** at 390 px the page was 30 px wider than the screen. The step indicator overflowed, and the navbar wrapped "Mock Mentor" and "Sign in". On phones the step names are now hidden (each card's heading names the step), "Try as Guest" becomes "Guest", and the navbar's spacing is tighter.
+
+**Proof**
+- `lint`, `typecheck`, `test` and `build` pass.
+- **Browser (the real setup page, with stand-ins for Clerk and the router): 21/21.**
+  - Covers everything above: the gate for a new visitor, a used guest and a stale guest; the clean upload error; `.docx` and 6 MB rejected with zero uploads; drag and drop; the resume and job each summarized once across Back/Next and again after a change; Back from the mentor step; mentor selection with Enter; the create failure un-spinning, plus a retry that navigates.
+  - At 390 px nothing extends past the screen, including the navbar.
+- **The interview page's error card: 4/4.** It explains the 401, the link isn't nested in a button, and "Try again" refetches.
+- **API:** 6/6 new checks (`process-resume` without `fileUrl`, old payloads still accepted, guest reuse and 404). Steps 6 and 7 suites still pass: 25/25 and 28/28.
+
+**Not verified here:** the real Clerk sign-in modal, because it needs real keys.
