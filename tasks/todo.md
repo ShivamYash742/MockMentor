@@ -553,3 +553,135 @@ Two commits: (1) the `model/` upgrade already done, (2) this integration. Tell m
 **Notes**
 - The dev overlay's "1 issue" is MediaPipe's own startup line ("Created TensorFlow Lite XNNPACK delegate for CPU") printed via `console.error`. It predates this change and is harmless.
 - Not linked from anywhere yet (landing page / navbar). Nothing committed.
+
+---
+
+## Audit #2 — bugs and upgrade ideas (2026-09-30)
+
+> **Status: findings only. No code has changed.** Waiting for your go-ahead before starting any step below.
+
+I read every source file again after the v2.0.0 release. Baseline: `lint`, `typecheck` and `test` (18 pass, 1 skipped) all pass, and `npm audit` reports 0 vulnerabilities. Items marked **(verified)** were reproduced. Everything else comes from reading the code, with the exact line.
+
+How I verified: I ran the real `useSpeechToText` hook, an exact copy of the camera effect, and the real `ScrollArea` in headless Chromium, with a fake `SpeechRecognition` and a fake camera. Mongoose and prompt behaviour were checked in Node. The harness is in my scratchpad and nothing was added to the repo.
+
+### A. Broken for users right now
+1. **Every spoken answer repeats its last phrase (verified).** `hooks/useSpeechToText.ts:172` builds the answer as `transcriptRef.current + currentFinal`, but by the time the 3 s timer fires, `transcriptRef` already contains `currentFinal`.
+   - Saying "hello world" produced `"hello world hello world"`.
+   - Two phrases produced `"I like Python and Go and Go"`.
+   - This corrupts what the AI hears, the saved transcript, the WPM and filler counts, and the report.
+2. **Turning the camera off doesn't turn it off (verified).** `components/interview.tsx:453` unmounts the `<video>` when the camera is off. By the time the effect at `:202` runs, `videoRef.current` is already `null`, so the tracks are never stopped.
+   - The track stayed `live` after the toggle.
+   - The camera light stays on, and every off/on leaks another stream. This is a privacy issue.
+3. **The report page crashes when the camera data is partial.**
+   - `components/interview-report.tsx:412` calls `Object.entries(report.faceAnalytics.emotions_avg)`, and `:454` calls `stress_peak.toFixed`.
+   - `exitInterview` stores only `{ questionSnapshots }` when the final summary is empty (`components/interview.tsx:310-314`).
+   - Trigger: turn the camera off, let one more question be asked, then end the interview. `emotions_avg` is then `undefined`, which throws a `TypeError` and gives a blank error page.
+4. **The report is thrown away after the AI call if any string is empty (verified).**
+   - Mongoose `required` rejects `''`.
+   - The prompt itself expects unanswered questions, so `userResponse: ""` is a likely model output. `lib/models/InterviewReport.ts:131-142` then fails `save()` with a 500, and every retry pays for the AI again.
+5. **The AI keeps talking after the interview ends.** `components/logic/useVoiceInterview.ts:54-56` speaks the reply without checking `isActive`. If the timer hits 0 while a reply is in flight, the voice plays over the "complete" screen. `addMessage` also runs after `clearMessages`.
+6. **Typed answers are silently lost while the AI is thinking or speaking.** `useVoiceInterview.ts:28` returns early on `isProcessing`, and `components/interview.tsx:299-300` clears the text box anyway.
+7. **Pause doesn't hold.**
+   - After the AI finishes speaking, the mic restarts even while paused: `useVoiceInterview.ts:162-166` checks `isActive` and `isMuted`, but not `isPaused`.
+   - The server clock also keeps running while paused, so a long pause can use up the whole interview. The UI doesn't say this.
+8. **The transcript never auto-scrolls (verified).** The ref at `components/interview.tsx:496` points at the Radix root, not the scrolling viewport. In the test, `scrollTop` was set but the viewport stayed at 0 with 1,484 px left to scroll.
+9. **The setup page's "Start Interview" button spins forever after a server error**, for example the guest limit's 403. `app/interview/new/page.tsx:259-271` only resets `loading` in `catch`, not in the `data.success === false` branch.
+10. **Upload errors show raw JSON.** In `app/interview/new/page.tsx:160-166`, the inner `catch {}` catches the error thrown just above it. The user sees `Server error: 400 - {"error":"File is too large (max 5MB)"}` instead of the message.
+11. **The landing page's "Start Interview" button leads nowhere for new visitors.** `app/page.tsx:24` links to `/interview/new` without creating a guest session. Every step there then fails with a 401 and a vague "Failed to process resume text". Nothing says "sign in or try as guest".
+12. **A guest who has already used their interview finds out only at the last step,** after the resume and job AI calls. The guest API already returns `canStartInterview`, and nothing reads it.
+
+### B. Report accuracy
+13. **Stress goes to the AI on the wrong scale.** `app/api/generate-report/route.ts:21` labels it "0-1", but the value is 0–10 (`lib/faceAnalysis.ts:435`). A calm 2.0 reads as "maximum stress".
+14. **Body-language numbers only cover the last question.**
+    - `resetSession()` clears the frame log at every new question (`hooks/useFaceTracker.ts:392`).
+    - `exitInterview` uses the final `requestSummary()` as the top-level stats (`components/interview.tsx:309-311`).
+    - The per-question snapshots are stored but never combined.
+15. **Camera data only lives in browser memory until "Generate report" is clicked.** A refresh, or coming back later (`app/interview/[id]/page.tsx:101-107` passes no `faceAnalytics`), silently gives "Not assessed".
+16. **A report can be generated with zero answers.**
+    - With an empty transcript, `formatPrompt` leaves the literal `{conversationText}` in the prompt (`lib/promptHelper.ts:11`, verified), because an empty string is falsy.
+    - This spends an AI call to grade nothing.
+17. **WPM mixes typed and spoken answers.** Typed words are counted, but only spoken time is in the denominator (`lib/speechMetrics.ts:37,52`). "like" is always counted as a filler word ("I like Python").
+18. **The blink rate is inflated.** `blinks_per_min_avg` averages a running rate that starts very high (1 blink in the first second counts as 60/min), at `lib/faceAnalysis.ts:571`. Total blinks divided by duration would be accurate.
+
+### C. Security and cost
+19. **No rate limiting, and guest accounts are free and unlimited.**
+    - `POST /api/auth/guest` without an id creates a new guest every time (`app/api/auth/guest/route.ts:17-24`), so the one-interview limit is only a speed bump.
+    - Each guest can run up resume, job, welcome, unlimited `ai-chat` and report calls on your Groq key.
+    - `ai-chat` is limited by time (about 5 minutes), not by number of calls.
+20. **Client text flows into every prompt without length limits.**
+    - `create-interview` stores `jobSummary` and `resumeSummary` exactly as the client sends them (`app/api/create-interview/route.ts:12`).
+    - `process-job` doesn't cap `jobDescription`.
+    - `add_message` doesn't cap text length or message count.
+    - The whole transcript goes into the report prompt.
+21. **The client writes the transcript that the report grades.** `add_message` accepts `sender: 'interviewer'` from any caller. A user can only harm their own report, but having `ai-chat` save both turns on the server fixes this and also fixes message ordering (see D).
+22. **Error details leak to the client:** `details: error.message` at `app/api/upload-resume/route.ts:82` and `app/api/process-resume/route.ts:46`.
+23. **Resume files are never deleted**, and guests' files are left behind with nothing pointing to them. Pasting resume text also overwrites a signed-in user's `resumeUrl` with the string `"text-input"` (`app/interview/new/page.tsx:107`).
+24. **The Python sidecar can still be deployed through `render.yaml`**, even though the app doesn't use it. It has:
+    - CORS `*` and no authentication;
+    - one `Pipeline` shared by all users, and any client's `reset` resets everyone;
+    - CPU work inside the async WebSocket handler, which blocks the event loop.
+    Either stop deploying it, or fix it before integrating.
+
+### D. Smaller bugs and cleanup
+- **Messages can be saved out of order.** New messages are saved in parallel (`components/interview.tsx:161`), and the array order is whatever order they arrive in. Message ids are `Date.now()`, so two messages in the same millisecond collide.
+- **Clicking "Generate report" twice can give a 500.** Both requests call the AI, then the second `save()` hits the unique index.
+- **The report can time out.** `generateWithGroq`'s 8 s default timeout (`lib/groq.ts:36`) also applies to the large structured report. That risks a 503 on longer interviews, so the report needs its own, longer timeout.
+- **One mentor id has a leading space:** `' Bryan_IT_Sitting_public'` (`lib/mentors.ts:41`). `generate-report` matches ids exactly (`:115`), while other places trim them.
+- **The copy mentions a "dashboard" that doesn't exist:** "…later from the dashboard" and "Back to Dashboard" (`components/interview-complete.tsx:53,164`).
+- **The error card's button does two things.** A `<Link>` sits inside `<Button onClick={fetchInterview}>` (`app/interview/[id]/page.tsx:78-80`), so a click both refetches and navigates.
+- **Some animation classes are never defined:** `animate-blob`, `animation-delay-*`, `shine` and `direction-reverse`. Those animations do nothing.
+- **The report page is always dark** (`bg-[#0a0a0a]`, `components/interview-report.tsx:190`), whatever the theme.
+- **Accessibility gaps:** the icon-only control buttons have no `aria-label`, and the mentor cards can't be selected with the keyboard (`app/interview/new/page.tsx:583`).
+- **Stale references:**
+  - `middleware.ts:7` lists `/api/guest/interview-count`, which doesn't exist;
+  - the error hints in `lib/mongodb.ts` and `lib/appwrite-server.ts` still say `.env.local`.
+- **Dead code:**
+  - `createEmotionClassifier` has two identical ternary branches;
+  - `useFaceTracker`'s `sessionId` parameter is unused;
+  - `isSidecarAvailable` is a stale name.
+- **Timers aren't cleared on unmount:** the welcome message and gaze-banner timers.
+- **Needs a real-browser check:**
+  - the silence nudge repeats every 10 s with no limit;
+  - Chrome's own `no-speech` restart may re-arm the 10 s timer before it ever fires, which would also skew `pauseBefore`.
+
+### E. Upgrade ideas
+**Product**
+- A dashboard with interview history, score trends, and reports you can reopen. The models already index `userId`.
+- Configurable length and question count, plus modes: behavioural/STAR, technical, system design.
+- A device check before the interview: mic level, camera, and speech support, so Firefox users know up front to type.
+- Streaming AI replies, spoken sentence by sentence, for lower latency.
+- Whisper speech-to-text through `@ai-sdk/groq`. It works in Firefox and Safari and gives real confidence values.
+- Report extras:
+  - filler words highlighted in the transcript;
+  - a per-question timeline of stress and emotion;
+  - a model "better answer" rewrite;
+  - a "retry this question" drill;
+  - PDF export or a share link.
+- Move a guest's interview into their account when they sign up.
+- `.docx` resumes, and letting the user review or edit the resume summary before the interview.
+
+**Engineering**
+- Rate limiting per IP and per identity on guest creation and the AI routes, plus a daily cap. Mongo TTL counters work without new infrastructure.
+- A transcript owned by the server: `ai-chat` saves both turns, and `add_message` is removed.
+- Enforce the rubric's hard rules in code after generation, for example the score cap by number of answered questions and "overall within ±8 of the average", instead of trusting the model.
+- Tests:
+  - API routes (`mongodb-memory-server`);
+  - Playwright tests for the voice and camera hooks (the harness above);
+  - a CI `build` step with placeholder env vars.
+- Turn on `strict` in `tsconfig` and `reactStrictMode`, after the effect bugs are fixed.
+- Add `error.tsx` and `not-found.tsx`.
+- Performance:
+  - move the camera and HUD into their own component, since the whole interview page re-renders at 10 Hz today;
+  - self-host or quantize the 30 MB emotion model. `raw.githubusercontent.com` isn't a CDN, and an int8 version is about 8 MB.
+- Major upgrades:
+  - Next 16, Clerk 7, `ai` 7, Mongoose 9, zod 4;
+  - `@mediapipe/tasks-vision` 1.0, whose pinned CDN wasm URL must change with it.
+- Privacy: a resume retention policy, "delete my data", and a short camera and privacy notice.
+
+### Proposed order (one step at a time, checking in after each)
+- [ ] **Step 6: live interview:** A1, A2, A5, A6, A7, A8, plus message order and ids from D.
+- [ ] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
+- [ ] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
+- [ ] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
+- [ ] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
+- The ideas in E stay a backlog until you choose some.
