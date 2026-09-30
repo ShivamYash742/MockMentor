@@ -680,7 +680,7 @@ How I verified: I ran the real `useSpeechToText` hook, an exact copy of the came
 
 ### Proposed order (one step at a time, checking in after each)
 - [x] **Step 6: live interview:** A1, A2, A5, A6, A7, A8, plus message order and ids from D.
-- [ ] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
+- [x] **Step 7: report pipeline:** A3, A4, B13–B18, plus the double-generate 500 and the report timeout from D.
 - [ ] **Step 8: setup and onboarding:** A9–A12, plus the dashboard copy and the error-card button from D.
 - [ ] **Step 9: abuse and cost controls:** C19–C23, with C21 done as the server-owned transcript.
 - [ ] **Step 10: polish and tests:** the rest of D, plus a first set of tests.
@@ -746,3 +746,55 @@ The one new line in the app for this is an optional `GROQ_BASE_URL` in `lib/groq
   - Phone (390 px): no horizontal overflow, Start is at y=260, and the answer box is visible with the panel open.
 
 **Not verified here:** real Chrome speech recognition and a real camera. The harness fakes their events in the same shape and order as the browser APIs. Please do one real interview in Chrome.
+
+### Review — Step 7: report pipeline (2026-09-30)
+**What changed**
+- **⚠ Found while verifying, the most important fix in this step: the database's unique indexes were never built.**
+  - `lib/mongodb.ts` connected with `bufferCommands: false`. The models are defined when their modules load, before the connection exists. Mongoose's automatic index build then doesn't wait for the connection, fails, and swallows the error.
+  - On a fresh database only `guestusers` had its unique index. The unique `interviewId` indexes on sessions and reports were missing, so Step 2's guarantees (one session per interview, one report per interview) quietly didn't hold. I reproduced two reports saved for one interview.
+  - Buffering is back on (Mongoose's default), so index builds wait for the connection. Verified on a dropped database: every schema index now exists.
+  - The circular `global.d.ts` type that forced a `@ts-ignore` is fixed too.
+  - **Before deploying:** check production for duplicates with the aggregation noted under Step 2. If duplicates exist, the unique index build fails. That failure is logged but doesn't break requests.
+- **A3, report page crash:**
+  - The source is fixed: see B14 below.
+  - The page itself now renders only the camera fields that exist. It shows "No answer given." for an empty answer. A "not generated yet" report links back to the interview, where it can be generated.
+- **A4, empty strings broke the save:** report text fields are no longer `required` in Mongoose, and zod still validates the shape. An empty `userResponse`/`feedback` now saves.
+- **B13:** stress is labelled 0–10 in the prompt.
+- **B14, only the last question's camera data counted:** `combineSummaries()` in `lib/faceAnalysis.ts` merges all per-question summaries, frame-weighted, with totals summed and the highest peak. The interview sends that whole-interview summary, so there's always a complete top-level summary whenever any frames exist.
+- **B15** was done in Step 6. `generate-report` uses the session's stored camera summary, with the request's copy as a fallback.
+- **B16, grading an empty interview:**
+  - An interview with no answers returns `400 no_answers` with no AI call, and the completion screen says so.
+  - `formatPrompt` now substitutes empty strings instead of leaving `{placeholders}`.
+- **B17, speech numbers:**
+  - Pace and filler words use spoken answers only.
+  - "like" counts only as hesitation: "I like Python" and "looks like" no longer count.
+  - Typed answers get an honest prompt section instead of "Speaking Time: 0 seconds" plus the −15 penalty. That was a real unfairness for Firefox users.
+- **B18:** the blink rate is total blinks over the duration.
+- **Rubric enforced in code:** `lib/reportRules.ts` applies the rules that are pure caps and clamps, so a report that already follows them is unchanged. The point deductions stay with the model to avoid double-counting.
+  - overall within ±8 of the question average;
+  - a cap of 45 for 1 answer and 55 for 2;
+  - no strengths listed for a category under 40.
+- **Double "Generate" gave a 500:** a duplicate-key error on save now returns the report that won the race.
+- **Report timeout:** 60 s instead of the 8 s chat default. I also checked that a timed-out model really does fall back to the next one.
+- **Other report fixes:**
+  - metrics come from the session's own transcript;
+  - an active session (the "end" call never arrived) is closed by `generate-report`;
+  - nudges are left out of the graded transcript;
+  - the transcript is capped at 40k chars;
+  - `reportGenerated` is now set on the interview and the session;
+  - the mentor is looked up with `getMentorById`, the trimmed match.
+- **Copy:** "…from the dashboard" became "come back to this page", and "Back to Dashboard" became "Start a new interview".
+
+**Proof**
+- `lint`, `typecheck` and `test` all pass: 32 pass, 1 skipped. That's 9 new tests: `reportRules` ×4, `combineSummaries`/blink rate ×3, and 2 for filler words and WPM.
+- **API end to end: 28/28 against the fake Groq server.** Checks include:
+  - the prompt contains `Stress level (0-10…): 2.5`, `1 of 3 answers were typed`, `Speaking Time: 9 seconds` (spoken answers only) and `Filler Words: 2`, with no `{placeholder}` left;
+  - 97 is pulled to 38 (question average 30);
+  - an empty-strings report saves;
+  - no answers → 400 with **zero** AI calls;
+  - **two racing generate calls → both 200, exactly one report** (this failed before the index fix);
+  - a missing "end" is closed by generate, with sanitized fallback camera data;
+  - typed-only → speech marked not measured;
+  - AI down → 503 with nothing saved, then a retry works.
+- Step 6's suite still passes (25/25), plus **5 parallel starts → one session**.
+- **Browser:** the report page with legacy `{ questionSnapshots }`-only data and with partial data renders without errors. "Not generated yet" links back. The completion screen explains nothing-to-grade and hides Generate and Retry. The 8 interview scenarios still pass.

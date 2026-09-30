@@ -46,7 +46,7 @@ All prompts are stored in JSON format. Simply edit the file to update any prompt
 
 #### Report Generation
 - **File**: `reportGeneration.mainPrompt`
-- **Variables**: `{jobTitle}`, `{userSummary}`, `{jobSummary}`, `{speakingTime}`, `{wordsPerMinute}`, `{fillerWordsCount}`, `{confidenceScore}`, `{conversationText}`
+- **Variables**: `{jobTitle}`, `{userSummary}`, `{jobSummary}`, `{speechMetricsSection}`, `{bodyLanguageSection}`, `{conversationText}` (the two sections are built in `app/api/generate-report/route.ts`)
 - **Used in**: Generating performance reports
 
 ## Variable Syntax

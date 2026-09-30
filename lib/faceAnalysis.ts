@@ -554,10 +554,11 @@ export function aggregateSession(frames: FrameData[]): AggregatedSummary {
 
   const totalBlinks = Math.max(...frames.map(f => f.eye?.blink_count ?? 0));
   const lookFrac = frames.filter(f => f.gaze?.looking_at_screen).length / n;
+  const durationS = frames[frames.length - 1].ts - frames[0].ts;
 
   return {
     session_id: null,
-    duration_s: frames.length > 0 ? frames[frames.length - 1].ts - frames[0].ts : 0,
+    duration_s: durationS,
     frame_count: n,
     emotions_avg: emotionsAvg,
     dominant_histogram: dominantHistogram,
@@ -568,6 +569,58 @@ export function aggregateSession(frames: FrameData[]): AggregatedSummary {
     attention_avg: Math.round(avg('attention') * 10000) / 10000,
     attention_on_screen_frac: Math.round(lookFrac * 1000) / 1000,
     total_blinks: totalBlinks,
-    blinks_per_min_avg: Math.round(avg('blinks_per_min', 'eye') * 100) / 100,
+    // Blinks over the whole window. Averaging each frame's running rate (as this used to) is
+    // inflated early on: one blink in the first second reads as 60/min.
+    blinks_per_min_avg: blinkRate(totalBlinks, durationS),
+  };
+}
+
+function blinkRate(blinks: number, durationS: number): number {
+  return durationS > 0 ? Math.round((blinks / (durationS / 60)) * 100) / 100 : 0;
+}
+
+/**
+ * Combines per-question summaries into one for the whole interview. The tracker's frame log is
+ * reset at every new question, so the last summary alone only covers the final question.
+ * Averages are weighted by frame count; totals are summed; the peak is the highest peak.
+ */
+export function combineSummaries(parts: AggregatedSummary[]): AggregatedSummary | null {
+  const segments = parts.filter((p) => p && p.frame_count > 0);
+  if (segments.length === 0) return null;
+  const frames = segments.reduce((sum, s) => sum + s.frame_count, 0);
+  const weighted = (pick: (s: AggregatedSummary) => number | undefined, digits = 4) => {
+    const total = segments.reduce((sum, s) => sum + (pick(s) ?? 0) * s.frame_count, 0);
+    const scale = 10 ** digits;
+    return Math.round((total / frames) * scale) / scale;
+  };
+
+  const emotions = {} as EmotionScores;
+  for (const k of EMOTIONS) emotions[k] = weighted((s) => s.emotions_avg?.[k]);
+
+  const histogram: Record<string, number> = {};
+  for (const s of segments) {
+    for (const [k, v] of Object.entries(s.dominant_histogram ?? {})) {
+      histogram[k] = (histogram[k] ?? 0) + v * s.frame_count;
+    }
+  }
+  for (const k of Object.keys(histogram)) histogram[k] = Math.round((histogram[k] / frames) * 1000) / 1000;
+
+  const durationS = segments.reduce((sum, s) => sum + (s.duration_s ?? 0), 0);
+  const totalBlinks = segments.reduce((sum, s) => sum + (s.total_blinks ?? 0), 0);
+
+  return {
+    session_id: null,
+    duration_s: Math.round(durationS * 1000) / 1000,
+    frame_count: frames,
+    emotions_avg: emotions,
+    dominant_histogram: histogram,
+    stress_avg: weighted((s) => s.stress_avg),
+    stress_peak: Math.max(...segments.map((s) => s.stress_peak ?? 0)),
+    engagement_avg: weighted((s) => s.engagement_avg),
+    confidence_avg: weighted((s) => s.confidence_avg),
+    attention_avg: weighted((s) => s.attention_avg),
+    attention_on_screen_frac: weighted((s) => s.attention_on_screen_frac, 3),
+    total_blinks: totalBlinks,
+    blinks_per_min_avg: blinkRate(totalBlinks, durationS),
   };
 }

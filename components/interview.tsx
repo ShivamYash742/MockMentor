@@ -36,7 +36,7 @@ import { getMentorById } from '@/lib/mentors';
 import InterviewComplete from './interview-complete';
 import { useFaceTracker } from '@/hooks/useFaceTracker';
 import { StressHUD } from '@/components/interview/StressHUD';
-import type { FaceSummary } from '@/lib/mlSidecar';
+import { combineSummaries, type AggregatedSummary } from '@/lib/faceAnalysis';
 import { appConfig } from '@/lib/appConfig';
 import { guestHeaders } from '@/lib/utils';
 import { START_INTERVIEW } from '@/lib/chatProtocol';
@@ -80,7 +80,7 @@ const Interview = ({
   const streamRef = useRef<MediaStream | null>(null);
   const chatViewportRef = useRef<HTMLDivElement>(null);
   const faceSummaryRef = useRef<object | null>(null);
-  const questionSnapshotsRef = useRef<FaceSummary[]>([]);
+  const questionSnapshotsRef = useRef<AggregatedSummary[]>([]);
   const gazeOffTimeRef = useRef<number | null>(null);
   const alertCooldownRef = useRef<number>(0);
   const interviewerMsgCountRef = useRef(0);
@@ -301,13 +301,13 @@ const Interview = ({
     // Silence the interviewer and the mic right away, not after the network calls below.
     stop();
 
-    // Collect face analytics before stopping tracker (3.3: merge per-question snapshots)
+    // Face data for the whole interview. The tracker clears its log at every new question, so
+    // the final summary alone only covered the last question; combine it with the earlier ones.
+    // This also means there's always a complete top-level summary when any frames exist (the
+    // report page used to crash on a bare { questionSnapshots } after the camera was turned off).
     const finalSummary = await requestSummary();
-    faceSummaryRef.current = finalSummary
-      ? { ...finalSummary, questionSnapshots: questionSnapshotsRef.current }
-      : questionSnapshotsRef.current.length > 0
-        ? { questionSnapshots: questionSnapshotsRef.current }
-        : null;
+    const whole = combineSummaries([...questionSnapshotsRef.current, ...(finalSummary ? [finalSummary] : [])]);
+    faceSummaryRef.current = whole ? { ...whole, questionSnapshots: questionSnapshotsRef.current } : null;
 
     // Metrics are computed on the server from its own transcript; the camera summary is stored
     // with the session so a report generated later still has it.

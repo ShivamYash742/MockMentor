@@ -84,26 +84,51 @@ interface ReportData {
       longTerm: string[];
     };
   };
+  // Sanitized client data: any field can be missing, so every one is optional and the page only
+  // renders what's there (it used to crash on a summary without emotions_avg).
   faceAnalytics?: {
-    duration_s: number;
-    frame_count: number;
-    emotions_avg: Record<string, number>;
-    dominant_histogram: Record<string, number>;
-    stress_avg: number;
-    stress_peak: number;
-    engagement_avg: number;
-    confidence_avg: number;
-    attention_avg: number;
-    attention_on_screen_frac: number;
-    total_blinks: number;
-    blinks_per_min_avg: number;
+    duration_s?: number;
+    frame_count?: number;
+    emotions_avg?: Record<string, number>;
+    dominant_histogram?: Record<string, number>;
+    stress_avg?: number;
+    stress_peak?: number;
+    engagement_avg?: number;
+    confidence_avg?: number;
+    attention_avg?: number;
+    attention_on_screen_frac?: number;
+    total_blinks?: number;
+    blinks_per_min_avg?: number;
   };
 }
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const NOT_GENERATED = 'Report not generated yet';
 
 const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }) => {
   const [report, setReport] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const face = report?.faceAnalytics;
+  const emotionRows = face?.emotions_avg ? Object.entries(face.emotions_avg).filter(([, v]) => isNum(v)) : [];
+  const signalRows = face
+    ? [
+        { label: 'Stress', value: face.stress_avg, pct: (v: number) => Math.min(100, Math.round(v * 10)), color: 'bg-rose-500' },
+        { label: 'Engagement', value: face.engagement_avg, pct: (v: number) => Math.round(v * 100), color: 'bg-blue-500' },
+        { label: 'Confidence', value: face.confidence_avg, pct: (v: number) => Math.round(v * 100), color: 'bg-emerald-500' },
+        { label: 'Attention', value: face.attention_avg, pct: (v: number) => Math.round(v * 100), color: 'bg-indigo-500' },
+      ].flatMap((row) => (isNum(row.value) ? [{ label: row.label, value: row.pct(row.value), color: row.color }] : []))
+    : [];
+  const statRows = face
+    ? [
+        { label: 'On-Screen Focus', value: face.attention_on_screen_frac, format: (v: number) => `${Math.round(v * 100)}%` },
+        { label: 'Total Blinks', value: face.total_blinks, format: (v: number) => String(v) },
+        { label: 'Blink Rate', value: face.blinks_per_min_avg, format: (v: number) => `${Math.round(v)}/min` },
+        { label: 'Peak Stress', value: face.stress_peak, format: (v: number) => `${v.toFixed(1)} / 10` },
+      ].flatMap((row) => (isNum(row.value) ? [{ label: row.label, value: row.format(row.value) }] : []))
+    : [];
+  const hasFaceData = emotionRows.length > 0 || signalRows.length > 0 || statRows.length > 0;
 
   const fetchReport = useCallback(async () => {
     try {
@@ -176,10 +201,20 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
           <CardContent className="pt-8 pb-8 space-y-4">
             <AlertCircle className="h-16 w-16 text-rose-500 mx-auto opacity-80" />
             <h2 className="text-2xl font-bold tracking-tight">Report Unavailable</h2>
-            <p className="text-muted-foreground">{error || 'Report not found'}</p>
-            <Button onClick={onBack || (() => window.history.back())} className="mt-4 w-full">
-              Go Back
-            </Button>
+            <p className="text-muted-foreground">
+              {error === NOT_GENERATED
+                ? "This interview's report hasn't been generated yet. You can generate it from the interview page."
+                : error || 'Report not found'}
+            </p>
+            {error === NOT_GENERATED ? (
+              <Button asChild className="mt-4 w-full">
+                <Link href={`/interview/${interviewId}`}>Go to the interview</Link>
+              </Button>
+            ) : (
+              <Button onClick={onBack || (() => window.history.back())} className="mt-4 w-full">
+                Go Back
+              </Button>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -396,20 +431,21 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
            </CardContent>
         </Card>
 
-        {/* Biometric Intelligence — only rendered when ML sidecar was active */}
-        {report.faceAnalytics && (
+        {/* Biometric Intelligence — only rendered when the camera produced data */}
+        {hasFaceData && (
           <div className="space-y-6">
             <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center">
               <Eye className="w-6 h-6 mr-3 text-primary" />
               Biometric Intelligence
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {emotionRows.length > 0 && (
               <Card className="bg-background/40 border-border/30">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">Emotion Distribution</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2.5">
-                  {Object.entries(report.faceAnalytics.emotions_avg)
+                  {[...emotionRows]
                     .sort((a, b) => b[1] - a[1])
                     .map(([emotion, score]) => (
                       <div key={emotion} className="flex items-center gap-3">
@@ -425,18 +461,15 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                     ))}
                 </CardContent>
               </Card>
+              )}
 
+              {(signalRows.length > 0 || statRows.length > 0) && (
               <Card className="bg-background/40 border-border/30">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">Physiological Signals</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {[
-                    { label: 'Stress', value: Math.min(100, Math.round(report.faceAnalytics.stress_avg * 10)), color: 'bg-rose-500' },
-                    { label: 'Engagement', value: Math.round(report.faceAnalytics.engagement_avg * 100), color: 'bg-blue-500' },
-                    { label: 'Confidence', value: Math.round(report.faceAnalytics.confidence_avg * 100), color: 'bg-emerald-500' },
-                    { label: 'Attention', value: Math.round(report.faceAnalytics.attention_avg * 100), color: 'bg-indigo-500' },
-                  ].map(item => (
+                  {signalRows.map(item => (
                     <div key={item.label} className="flex items-center gap-3">
                       <span className="text-xs text-slate-400 w-20">{item.label}</span>
                       <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -445,14 +478,9 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                       <span className="text-xs text-slate-500 w-8 text-right">{item.value}</span>
                     </div>
                   ))}
-                  <Separator className="bg-border/30 my-2" />
+                  {signalRows.length > 0 && statRows.length > 0 && <Separator className="bg-border/30 my-2" />}
                   <div className="grid grid-cols-2 gap-3 pt-1">
-                    {[
-                      { label: 'On-Screen Focus', value: `${Math.round(report.faceAnalytics.attention_on_screen_frac * 100)}%` },
-                      { label: 'Total Blinks', value: String(report.faceAnalytics.total_blinks) },
-                      { label: 'Blink Rate', value: `${Math.round(report.faceAnalytics.blinks_per_min_avg)}/min` },
-                      { label: 'Peak Stress', value: `${report.faceAnalytics.stress_peak.toFixed(1)} / 10` },
-                    ].map(item => (
+                    {statRows.map(item => (
                       <div key={item.label} className="space-y-0.5">
                         <p className="text-sm font-semibold text-slate-200">{item.value}</p>
                         <p className="text-xs text-slate-500">{item.label}</p>
@@ -461,6 +489,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                   </div>
                 </CardContent>
               </Card>
+              )}
             </div>
           </div>
         )}
@@ -489,7 +518,7 @@ const InterviewReport: React.FC<InterviewReportProps> = ({ interviewId, onBack }
                         <div className="relative w-full">
                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-border rounded-full" />
                            <p className="text-base text-slate-400 leading-relaxed font-light italic pl-5 py-1">
-                             &quot;{qa.userResponse}&quot;
+                             {qa.userResponse ? <>&quot;{qa.userResponse}&quot;</> : 'No answer given.'}
                            </p>
                         </div>
                       </div>

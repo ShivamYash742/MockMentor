@@ -6,10 +6,12 @@ type PromptVariables = Record<string, string | number | boolean>;
  * Replace variables in a prompt template
  * Example: "Hello {name}" with {name: "John"} => "Hello John"
  */
-function formatPrompt(template: string, variables: PromptVariables): string {
-  return template.replace(/\{(\w+)\}/g, (match, key) => {
-    return variables[key]?.toString() || match;
-  });
+export function formatPrompt(template: string, variables: PromptVariables): string {
+  // A variable that's present is always substituted, even when it's an empty string. The old
+  // `value || match` left a literal "{conversationText}" in the prompt for an empty transcript.
+  return template.replace(/\{(\w+)\}/g, (match, key) =>
+    Object.prototype.hasOwnProperty.call(variables, key) ? String(variables[key]) : match
+  );
 }
 
 /**
@@ -94,10 +96,7 @@ export function getReportGenerationPrompt(params: {
   jobTitle: string;
   userSummary: string;
   jobSummary: string;
-  speakingTime: number;
-  wordsPerMinute: number;
-  fillerWordsCount: number;
-  fluencyScore: number; // filler-word-density-derived fluency proxy — not measured confidence
+  speechMetricsSection: string; // measured speech numbers, or a note that answers were typed
   conversationText: string;
   bodyLanguageSection: string; // real numbers, or an instruction to omit bodyLanguage entirely
 }): string {
